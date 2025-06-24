@@ -3,7 +3,7 @@ Event system for agent communication and UI updates
 """
 from typing import Dict, Any, Optional, Callable, List
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import logging
 
@@ -20,6 +20,7 @@ class EventType(str, Enum):
     AGENT_COMPLETED = "agent_completed"
     AGENT_FAILED = "agent_failed"
     AGENT_MESSAGE = "agent_message"
+    AGENT_ERROR = "agent_error"
     
     # Project events
     PROJECT_CREATED = "project_created"
@@ -27,15 +28,27 @@ class EventType(str, Enum):
     PROJECT_COMPLETED = "project_completed"
     PROJECT_FAILED = "project_failed"
     
+    # File system events
+    PROJECT_FILE_SYSTEM_INITIALIZED = "project_file_system_initialized"
+    PROJECT_FILE_CREATED = "project_file_created"
+    PROJECT_FILE_UPDATED = "project_file_updated"
+    PROJECT_FILE_DELETED = "project_file_deleted"
+    PROJECT_SNAPSHOT_CREATED = "project_snapshot_created"
+    
     # Artifact events
     ARTIFACT_CREATED = "artifact_created"
     ARTIFACT_UPDATED = "artifact_updated"
     ARTIFACT_VALIDATED = "artifact_validated"
+    CODE_GENERATED = "code_generated"
     
     # Validation events
     VALIDATION_STARTED = "validation_started"
     VALIDATION_COMPLETED = "validation_completed"
     VALIDATION_FAILED = "validation_failed"
+    
+    # Intent classification events
+    INTENT_CLASSIFICATION_STARTED = "intent_classification_started"
+    INTENT_CLASSIFICATION_COMPLETED = "intent_classification_completed"
 
 
 class Event:
@@ -61,7 +74,7 @@ class Event:
         self.project_id = project_id
         self.data = data
         self.agent_name = agent_name
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert event to dictionary for serialization."""
@@ -118,6 +131,27 @@ class EventBus:
                 "event": event.to_dict()
             }
         )
+    
+    async def emit(self, event_type: EventType, data: Dict[str, Any], project_id: Optional[str] = None):
+        """
+        Convenience method to emit an event.
+        
+        Args:
+            event_type: The type of event
+            data: Event data
+            project_id: Optional project ID (extracted from data if not provided)
+        """
+        if project_id is None:
+            project_id = data.get("project_id", "system")
+        
+        event = Event(
+            event_type=event_type,
+            project_id=project_id,
+            data=data,
+            agent_name=data.get("agent")
+        )
+        
+        await self.publish(event)
     
     async def start(self):
         """Start processing events."""

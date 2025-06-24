@@ -11,7 +11,7 @@ from app.agents.base import BaseAgent
 from app.core.state import DevMasterState, TaskType, AgentStatus
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class ScopeIntent(BaseModel):
@@ -233,7 +233,7 @@ class IntentClassifier(BaseAgent):
             metadata={
                 "prompt_length": len(prompt),
                 "all_scores": {k.value: v for k, v in scores.items()},
-                "analyzed_at": datetime.utcnow().isoformat()
+                "analyzed_at": datetime.now(timezone.utc).isoformat()
             }
         )
     
@@ -286,7 +286,7 @@ class IntentClassifier(BaseAgent):
             "content": f"Classified request as: {intent.primary_intent.value}",
             "metadata": {
                 "intent": intent.model_dump(),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         }
         

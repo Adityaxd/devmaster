@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     
+    # File System
+    projects_base_path: str = "./projects"  # Base directory for project files
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

@@ -8,7 +8,7 @@ import logging
 
 from .config import settings
 from .database import sync_engine, Base, init_db
-from .routers import orchestration
+from .routers import orchestration, projects
 from .core.events import event_bus
 
 # Configure logging
@@ -61,6 +61,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(orchestration.router)
+app.include_router(projects.router)
 
 
 @app.get("/")

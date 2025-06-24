@@ -9,6 +9,8 @@ from .base import BaseAgent, AgentState, AgentResult
 from .orchestrator import OrchestratorGraph
 from app.core.state import DevMasterState
 from .registry import agent_registry, register_agent
+from .classifiers import IntentClassifier, CapabilityRouter
+from .specialists import ChatAgent
 
 __all__ = [
     "BaseAgent",
@@ -18,4 +20,7 @@ __all__ = [
     "DevMasterState",
     "agent_registry",
     "register_agent",
+    "IntentClassifier",
+    "CapabilityRouter",
+    "ChatAgent",
 ]
