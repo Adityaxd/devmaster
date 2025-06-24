@@ -76,10 +76,16 @@ class OrchestratorGraph:
                 {name: name for name in list(self.agents.keys()) + ["Done"]}
             )
         
-        # Set entry point (will be determined by initial state)
-        if self.agents:
-            # For now, we'll handle entry point dynamically
-            pass
+        # Set entry point - we need a start node that routes to the initial agent
+        self.graph.add_node("START", self._start_node)
+        self.graph.set_entry_point("START")
+        
+        # Add conditional edge from START to route to initial agent
+        self.graph.add_conditional_edges(
+            "START",
+            self._route_to_next_agent,
+            {name: name for name in list(self.agents.keys()) + ["Done"]}
+        )
         
         # Compile the graph
         self.compiled_graph = self.graph.compile()    
@@ -115,6 +121,19 @@ class OrchestratorGraph:
             return updates
         
         return node_function
+    
+    def _start_node(self, state: DevMasterState) -> Dict[str, Any]:
+        """
+        The start node that initializes the workflow.
+        
+        Args:
+            state: The current state
+            
+        Returns:
+            Initial state updates
+        """
+        logger.info("Starting workflow")
+        return {}
     
     def _final_node(self, state: DevMasterState) -> Dict[str, Any]:
         """

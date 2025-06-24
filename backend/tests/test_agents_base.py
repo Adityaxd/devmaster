@@ -3,45 +3,47 @@
 import pytest
 from typing import Dict, Any
 from unittest.mock import Mock, patch, AsyncMock
+from datetime import datetime
 
-from app.agents.base import BaseAgent
-from app.core.state import DevMasterState, AgentStatus, TaskType
+from app.agents.base import BaseAgent, AgentResult, AgentState
+from app.core.state import DevMasterState, Message, Artifact, TaskType
 from app.agents.registry import agent_registry, register_agent
 
 
-class TestAgentClass(BaseAgent):
+class TestAgentImplementation(BaseAgent):
     """Test implementation of BaseAgent."""
     
-    name = "TestAgent"
-    description = "Agent for testing"
+    def __init__(self):
+        super().__init__(name="TestAgent", description="Agent for testing")
+        self.execute_called = False
     
-    async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
+    async def execute(self, state: DevMasterState) -> AgentResult:
         """Test execution."""
-        return {
-            "messages": state.get("messages", []) + [{
-                "role": "assistant",
-                "content": "Test execution",
-                "agent": self.name
-            }]
-        }
+        self.execute_called = True
+        return AgentResult(
+            success=True,
+            state_updates={
+                "test_executed": True
+            },
+            messages=[self.add_message("Test execution completed")]
+        )
 
 
 class TestBaseAgent:
     """Test BaseAgent functionality."""
     
-    async def test_agent_initialization(self):
+    def test_agent_initialization(self):
         """Test agent initialization."""
-        agent = TestAgentClass()
+        agent = TestAgentImplementation()
         
         assert agent.name == "TestAgent"
         assert agent.description == "Agent for testing"
-        assert agent.status == AgentStatus.IDLE
-        assert agent.error_count == 0
-        assert agent.last_error is None
+        assert agent.state == AgentState.IDLE
     
-    async def test_agent_execution_success(self):
-        """Test successful agent execution."""
-        agent = TestAgentClass()
+    @pytest.mark.asyncio
+    async def test_agent_run_success(self):
+        """Test successful agent execution via run method."""
+        agent = TestAgentImplementation()
         initial_state: DevMasterState = {
             "messages": [],
             "active_agent": "TestAgent",
@@ -49,25 +51,39 @@ class TestBaseAgent:
             "user_request": "Test request",
             "plan": {},
             "artifacts": {},
-            "validation_results": {},
+            "validation_results": [],
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "context": {},
+            "project_id": "test-project",
+            "project_status": "initializing",
+            "agent_history": [],
+            "metadata": {},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "retry_count": 0,
+            "max_retries": 3,
+            "next_agent": None
         }
         
-        result = await agent.execute(initial_state)
+        result = await agent.run(initial_state)
         
-        assert agent.status == AgentStatus.IDLE
-        assert len(result["messages"]) == 1
-        assert result["messages"][0]["content"] == "Test execution"
+        assert agent.execute_called
+        assert agent.state == AgentState.COMPLETED
+        assert result.get("test_executed") is True
+        assert "TestAgent" in result.get("completed_agents", [])
+        assert len(result.get("messages", [])) == 1
+        assert result["messages"][0]["content"] == "Test execution completed"
     
-    async def test_agent_execution_with_error(self):
+    @pytest.mark.asyncio
+    async def test_agent_run_with_error(self):
         """Test agent execution with error handling."""
         class ErrorAgent(BaseAgent):
-            name = "ErrorAgent"
-            description = "Agent that throws errors"
+            def __init__(self):
+                super().__init__(name="ErrorAgent", description="Agent that throws errors")
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
+            async def execute(self, state: DevMasterState) -> AgentResult:
                 raise ValueError("Test error")
         
         agent = ErrorAgent()
@@ -78,33 +94,43 @@ class TestBaseAgent:
             "user_request": "Test request",
             "plan": {},
             "artifacts": {},
-            "validation_results": {},
+            "validation_results": [],
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "context": {},
+            "project_id": "test-project",
+            "project_status": "initializing",
+            "agent_history": [],
+            "metadata": {},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "retry_count": 0,
+            "max_retries": 3,
+            "next_agent": None
         }
         
         # Should not raise, but handle the error
-        result = await agent.execute(initial_state)
+        result = await agent.run(initial_state)
         
-        assert agent.status == AgentStatus.IDLE
-        assert agent.error_count == 1
-        assert agent.last_error is not None
-        assert "Test error" in str(agent.last_error)
-        assert result["error_count"] == 1
+        assert agent.state == AgentState.FAILED
+        assert result.get("error_count", 0) == 1
+        assert len(result.get("error_messages", [])) == 1
+        assert "Test error" in result["error_messages"][0]
     
+    @pytest.mark.asyncio
     async def test_agent_preconditions(self):
         """Test agent precondition validation."""
         class PreconditionAgent(BaseAgent):
-            name = "PreconditionAgent"
-            description = "Agent with preconditions"
+            def __init__(self):
+                super().__init__(name="PreconditionAgent", description="Agent with preconditions")
             
             async def validate_preconditions(self, state: DevMasterState) -> bool:
                 """Require a plan to exist."""
                 return bool(state.get("plan"))
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {"success": True}
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True, state_updates={"precondition_passed": True})
         
         agent = PreconditionAgent()
         
@@ -116,132 +142,181 @@ class TestBaseAgent:
             "user_request": "Test",
             "plan": {},  # Empty plan
             "artifacts": {},
-            "validation_results": {},
+            "validation_results": [],
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "context": {},
+            "project_id": "test-project",
+            "project_status": "initializing",
+            "agent_history": [],
+            "metadata": {},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "retry_count": 0,
+            "max_retries": 3,
+            "next_agent": None
         }
         
-        result = await agent.execute(state_no_plan)
+        result = await agent.run(state_no_plan)
         assert result.get("error_count", 0) > 0
+        assert "Preconditions not met" in result["error_messages"][0]
         
         # State with plan - should succeed
         state_with_plan = state_no_plan.copy()
         state_with_plan["plan"] = {"steps": ["test"]}
         
-        result = await agent.execute(state_with_plan)
-        assert result.get("success") is True
+        result = await agent.run(state_with_plan)
+        assert result.get("precondition_passed") is True
     
-    async def test_create_message_helper(self):
-        """Test the create_message helper method."""
-        agent = TestAgentClass()
+    def test_add_message_helper(self):
+        """Test the add_message helper method."""
+        agent = TestAgentImplementation()
         
-        message = agent.create_message("Test content", role="system")
+        message = agent.add_message("Test content", role="system")
         
-        assert message["role"] == "system"
-        assert message["content"] == "Test content"
-        assert message["agent"] == "TestAgent"
-        assert "timestamp" in message
+        assert isinstance(message, Message)
+        assert message.role == "system"
+        assert message.content == "Test content"
+        assert message.agent_name == "TestAgent"
+        assert message.timestamp is not None
     
-    async def test_create_artifact_helper(self):
+    def test_create_artifact_helper(self):
         """Test the create_artifact helper method."""
-        agent = TestAgentClass()
+        agent = TestAgentImplementation()
         
         artifact = agent.create_artifact(
-            artifact_type="code",
+            artifact_id="test-artifact",
+            artifact_type="python",
             path="/test.py",
-            content="print('hello')",
-            language="python"
+            content="print('hello')"
         )
         
-        assert artifact["type"] == "code"
-        assert artifact["path"] == "/test.py"
-        assert artifact["content"] == "print('hello')"
-        assert artifact["language"] == "python"
-        assert artifact["created_by"] == "TestAgent"
-        assert "id" in artifact
-        assert "timestamp" in artifact
+        assert isinstance(artifact, Artifact)
+        assert artifact.id == "test-artifact"
+        assert artifact.type == "python"
+        assert artifact.path == "/test.py"
+        assert artifact.content == "print('hello')"
+        assert artifact.created_at is not None
     
-    async def test_update_active_agent(self):
-        """Test the update_active_agent helper method."""
-        agent = TestAgentClass()
+    @pytest.mark.asyncio
+    async def test_next_agent_handoff(self):
+        """Test agent handoff via next_agent."""
+        class HandoffAgent(BaseAgent):
+            def __init__(self):
+                super().__init__(name="HandoffAgent", description="Agent that hands off")
+            
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(
+                    success=True,
+                    next_agent="NextAgent",
+                    state_updates={"handoff_completed": True}
+                )
+        
+        agent = HandoffAgent()
         state: DevMasterState = {
             "messages": [],
-            "active_agent": "TestAgent",
+            "active_agent": "HandoffAgent",
             "task_type": TaskType.CONVERSATIONAL_CHAT,
             "user_request": "Test",
             "plan": {},
             "artifacts": {},
-            "validation_results": {},
+            "validation_results": [],
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "context": {},
+            "project_id": "test-project",
+            "project_status": "initializing",
+            "agent_history": [],
+            "metadata": {},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "retry_count": 0,
+            "max_retries": 3,
+            "next_agent": None
         }
         
-        updates = agent.update_active_agent(state, "NextAgent", "Moving to next phase")
+        result = await agent.run(state)
         
-        assert updates["active_agent"] == "NextAgent"
-        assert "TestAgent" in updates["completed_agents"]
-        assert len(updates["agent_history"]) == 1
-        assert updates["agent_history"][0]["from_agent"] == "TestAgent"
-        assert updates["agent_history"][0]["to_agent"] == "NextAgent"
-        assert updates["agent_history"][0]["reason"] == "Moving to next phase"
+        assert result["active_agent"] == "NextAgent"
+        assert result["handoff_completed"] is True
+        assert "HandoffAgent" in result["completed_agents"]
 
 
 class TestAgentRegistry:
     """Test agent registry functionality."""
     
-    def test_register_agent_decorator(self):
-        """Test the register_agent decorator."""
-        # Clear registry first
+    def setup_method(self):
+        """Clear registry before each test."""
         agent_registry._agents.clear()
-        
-        @register_agent
-        class DecoratedAgent(BaseAgent):
-            name = "DecoratedAgent"
-            description = "Test decorated agent"
-            
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {}
-        
-        assert "DecoratedAgent" in agent_registry._agents
-        assert agent_registry.get("DecoratedAgent") == DecoratedAgent
+        agent_registry._instances.clear()
     
-    def test_register_agent_manually(self):
+    def test_register_agent(self):
         """Test manual agent registration."""
-        agent_registry._agents.clear()
-        
         class ManualAgent(BaseAgent):
-            name = "ManualAgent"
-            description = "Manually registered"
+            def __init__(self):
+                super().__init__(name="ManualAgent", description="Manually registered")
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {}
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
         
-        agent_registry.register(ManualAgent)
+        agent_registry.register("ManualAgent", ManualAgent)
         
         assert "ManualAgent" in agent_registry._agents
-        assert agent_registry.get("ManualAgent") == ManualAgent
+        assert agent_registry.get_agent_class("ManualAgent") == ManualAgent
+    
+    def test_register_agent_decorator(self):
+        """Test the register_agent decorator."""
+        @register_agent("DecoratedAgent")
+        class DecoratedAgent(BaseAgent):
+            def __init__(self):
+                super().__init__(name="DecoratedAgent", description="Test decorated agent")
+            
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
+        
+        assert "DecoratedAgent" in agent_registry._agents
+        assert agent_registry.get_agent_class("DecoratedAgent") == DecoratedAgent
+    
+    def test_get_agent_instance(self):
+        """Test getting agent instances."""
+        class TestAgent(BaseAgent):
+            def __init__(self, **kwargs):
+                super().__init__(name=kwargs.get("name", "TestAgent"), description="Test")
+            
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
+        
+        agent_registry.register("TestAgent", TestAgent)
+        
+        # First call creates instance
+        instance1 = agent_registry.get_agent_instance("TestAgent")
+        assert instance1 is not None
+        assert instance1.name == "TestAgent"
+        
+        # Second call returns cached instance
+        instance2 = agent_registry.get_agent_instance("TestAgent")
+        assert instance2 is instance1
     
     def test_list_agents(self):
         """Test listing all registered agents."""
-        agent_registry._agents.clear()
-        
-        @register_agent
         class Agent1(BaseAgent):
-            name = "Agent1"
-            description = "First agent"
+            def __init__(self):
+                super().__init__(name="Agent1", description="First agent")
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {}
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
         
-        @register_agent
         class Agent2(BaseAgent):
-            name = "Agent2"
-            description = "Second agent"
+            def __init__(self):
+                super().__init__(name="Agent2", description="Second agent")
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {}
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
+        
+        agent_registry.register("Agent1", Agent1)
+        agent_registry.register("Agent2", Agent2)
         
         agents = agent_registry.list_agents()
         
@@ -251,27 +326,46 @@ class TestAgentRegistry:
     
     def test_get_nonexistent_agent(self):
         """Test getting a non-existent agent."""
-        result = agent_registry.get("NonExistentAgent")
+        result = agent_registry.get_agent_class("NonExistentAgent")
         assert result is None
+        
+        instance = agent_registry.get_agent_instance("NonExistentAgent")
+        assert instance is None
     
     def test_duplicate_agent_registration(self):
         """Test that duplicate registration raises error."""
-        agent_registry._agents.clear()
-        
-        @register_agent
         class DuplicateAgent(BaseAgent):
-            name = "DuplicateAgent"
-            description = "First registration"
+            def __init__(self):
+                super().__init__(name="DuplicateAgent", description="First registration")
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {}
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
+        
+        agent_registry.register("DuplicateAgent", DuplicateAgent)
         
         # Try to register another agent with same name
         with pytest.raises(ValueError, match="already registered"):
-            @register_agent
-            class DuplicateAgent2(BaseAgent):
-                name = "DuplicateAgent"  # Same name!
-                description = "Second registration"
-                
-                async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                    return {}
+            agent_registry.register("DuplicateAgent", DuplicateAgent)
+    
+    def test_clear_instances(self):
+        """Test clearing cached instances."""
+        class TestAgent(BaseAgent):
+            def __init__(self, **kwargs):
+                super().__init__(name=kwargs.get("name", "TestAgent"), description="Test")
+            
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(success=True)
+        
+        agent_registry.register("TestAgent", TestAgent)
+        
+        # Create instance
+        instance1 = agent_registry.get_agent_instance("TestAgent")
+        assert len(agent_registry._instances) == 1
+        
+        # Clear instances
+        agent_registry.clear_instances()
+        assert len(agent_registry._instances) == 0
+        
+        # Get instance again - should be new
+        instance2 = agent_registry.get_agent_instance("TestAgent")
+        assert instance2 is not instance1

@@ -1,13 +1,5 @@
-"""
-Specialist agents for the DevMaster platform.
+"""Specialist agents for DevMaster platform."""
 
-Each agent has a specific role in the software development pipeline.
-"""
+from .chat_agent import ChatAgent
 
-from .intent_classifier import IntentClassifierAgent
-from .planning import PlanningAgent
-
-__all__ = [
-    "IntentClassifierAgent",
-    "PlanningAgent",
-]
+__all__ = ["ChatAgent"]

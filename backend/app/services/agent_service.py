@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents import DevMasterState, OrchestratorGraph
 from ..agents.workflows import create_workflow_for_task
-from ..agents.specialists import IntentClassifierAgent
-from ..core.config import settings
+# from ..agents.specialists import IntentClassifierAgent  # TODO: Import in Week 3
+from ..config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -86,11 +86,13 @@ class AgentService:
         }
         
         try:
-            # First, run intent classification
-            classifier = IntentClassifierAgent()
-            result = await classifier.run(initial_state)
-            initial_state.update(result)
+            # TODO: Week 3 - Run intent classification
+            # classifier = IntentClassifierAgent()
+            # result = await classifier.run(initial_state)
+            # initial_state.update(result)
             
+            # For now, just use the task_type from initial state if set
+            # Otherwise default to CONVERSATIONAL_CHAT
             # Get the appropriate workflow
             task_type = initial_state.get("task_type", "CONVERSATIONAL_CHAT")
             workflow = create_workflow_for_task(task_type)

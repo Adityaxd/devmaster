@@ -11,7 +11,7 @@ import logging
 import asyncio
 from enum import Enum
 
-from .state import DevMasterState
+from app.core.state import DevMasterState
 from .base import BaseAgent
 from .registry import agent_registry
 
@@ -162,7 +162,8 @@ class OrchestratorGraph:
             raise ValueError("Entry point not set")
         
         state = initial_state.copy()
-        current_node_name = self.entry_point
+        # Use active_agent from state if present, otherwise use entry_point
+        current_node_name = state.get("active_agent", self.entry_point)
         
         # Initialize execution metadata
         state["start_time"] = datetime.utcnow().isoformat()
@@ -174,6 +175,14 @@ class OrchestratorGraph:
         self.logger.info(f"Starting orchestration from {current_node_name}")
         
         while current_node_name != "END":
+            # Check if node exists
+            if current_node_name not in self.nodes:
+                self.logger.error(f"Node {current_node_name} not found")
+                state["status"] = "failed"
+                state["error_count"] = state.get("error_count", 0) + 1
+                state["error_messages"] = state.get("error_messages", []) + [f"Node {current_node_name} not found"]
+                break
+            
             node = self.nodes[current_node_name]
             self.logger.info(f"Executing node: {current_node_name} (type: {node.type})")
             
@@ -195,6 +204,10 @@ class OrchestratorGraph:
                     self.logger.warning(f"No valid edge from {current_node_name}")
                     break
                 
+                # Handle the "Done" mapping here as well
+                if next_node == "Done":
+                    next_node = "END"
+                    
                 current_node_name = next_node
                 
             except Exception as e:
@@ -225,6 +238,9 @@ class OrchestratorGraph:
         if "next_agent" in state and state["next_agent"]:
             next_agent = state["next_agent"]
             state["next_agent"] = None  # Clear the override
+            # Map "Done" to "END"
+            if next_agent == "Done":
+                return "END"
             return next_agent
         
         # For router nodes, use the router function

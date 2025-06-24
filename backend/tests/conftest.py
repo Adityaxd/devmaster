@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures."""
 
+import os
 import pytest
 import asyncio
 from typing import AsyncGenerator
@@ -7,25 +8,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from sqlalchemy.pool import NullPool
 import uuid
 
+# Set test environment before importing app modules
+os.environ["ENVIRONMENT"] = "testing"
+os.environ["DATABASE_URL"] = "postgresql+asyncpg://devmaster:devmaster@localhost:5433/devmaster_test"
+os.environ["DATABASE_SYNC_URL"] = "postgresql://devmaster:devmaster@localhost:5433/devmaster_test"
+
 from app.database import Base
 from app.models import User, Project, Execution
 from app.config import settings
 
 
 # Test database URL (using test database)
-TEST_DATABASE_URL = settings.database_url.replace("/devmaster", "/devmaster_test")
-TEST_ASYNC_DATABASE_URL = settings.async_database_url.replace("/devmaster", "/devmaster_test")
+TEST_DATABASE_URL = "postgresql+asyncpg://devmaster:devmaster@localhost:5433/devmaster_test"
+TEST_ASYNC_DATABASE_URL = "postgresql+asyncpg://devmaster:devmaster@localhost:5433/devmaster_test"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def event_loop():
-    """Create an instance of the default event loop for the test session."""
+    """Create an instance of the default event loop for each test function."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 async def test_engine():
     """Create test database engine."""
     engine = create_async_engine(
@@ -61,9 +67,11 @@ async def async_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 @pytest.fixture
 async def test_user(async_session: AsyncSession) -> User:
     """Create a test user."""
+    # Use UUID to ensure unique email and username for each test
+    unique_id = str(uuid.uuid4())[:8]
     user = User(
-        email="test@example.com",
-        username="testuser",
+        email=f"test_{unique_id}@example.com",
+        username=f"testuser_{unique_id}",
         hashed_password="hashed_password_123",
         full_name="Test User",
         is_active=True

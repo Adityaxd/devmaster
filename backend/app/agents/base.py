@@ -14,7 +14,7 @@ import traceback
 
 from pydantic import BaseModel, Field
 
-from .state import DevMasterState, Message, Artifact
+from app.core.state import DevMasterState, Message, Artifact
 
 
 class AgentState(str, Enum):
@@ -118,7 +118,16 @@ class BaseAgent(ABC):
                 updates["messages"] = messages
             
             # Update last update timestamp
-            updates["last_update"] = datetime.utcnow().isoformat()
+            updates["updated_at"] = datetime.utcnow().isoformat()
+            
+            # Update agent history
+            agent_history = state.get("agent_history", []).copy()
+            agent_history.append({
+                "agent": self.name,
+                "status": "completed" if result.success else "failed",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            updates["agent_history"] = agent_history
             
             return updates
             
@@ -128,18 +137,23 @@ class BaseAgent(ABC):
             self.logger.debug(traceback.format_exc())
             
             # Return error state updates
-            errors = state.get("errors", []).copy()
-            errors.append({
+            error_messages = state.get("error_messages", []).copy()
+            error_messages.append(f"[{self.name}] {str(e)}")
+            
+            # Also update agent history with the error
+            agent_history = state.get("agent_history", []).copy()
+            agent_history.append({
                 "agent": self.name,
+                "status": "failed",
                 "error": str(e),
-                "traceback": traceback.format_exc(),
                 "timestamp": datetime.utcnow().isoformat()
             })
             
             return {
-                "errors": errors,
+                "error_messages": error_messages,
                 "error_count": state.get("error_count", 0) + 1,
-                "last_update": datetime.utcnow().isoformat()
+                "agent_history": agent_history,
+                "updated_at": datetime.utcnow().isoformat()
             }
     
     def add_message(self, content: str, role: str = "agent") -> Message:
@@ -156,7 +170,8 @@ class BaseAgent(ABC):
         artifact_id: str,
         artifact_type: str,
         path: str,
-        content: str
+        content: str,
+        language: Optional[str] = None
     ) -> Artifact:
         """Helper to create an artifact."""
         now = datetime.utcnow()
@@ -165,6 +180,8 @@ class BaseAgent(ABC):
             type=artifact_type,
             path=path,
             content=content,
+            language=language,
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            created_by=self.name
         )

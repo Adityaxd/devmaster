@@ -3,40 +3,42 @@
 import pytest
 from typing import Dict, Any
 from unittest.mock import Mock, patch, AsyncMock
+from datetime import datetime
 
-from app.agents.orchestrator import OrchestratorGraph
-from app.agents.base import BaseAgent
-from app.core.state import DevMasterState, TaskType, AgentStatus
+from app.agents.orchestrator import OrchestratorGraph, NodeType
+from app.agents.base import BaseAgent, AgentResult
+from app.core.state import DevMasterState, TaskType, AgentStatus, Message
 from app.agents.registry import agent_registry
 
 
 class MockPlanningAgent(BaseAgent):
     """Mock planning agent for testing."""
     
-    name = "PlanningAgent"
-    description = "Mock planning agent"
+    def __init__(self):
+        super().__init__(name="PlanningAgent", description="Mock planning agent")
     
-    async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
+    async def execute(self, state: DevMasterState) -> AgentResult:
         """Create a simple plan and hand off to DataModelingAgent."""
-        return {
-            "plan": {
-                "steps": ["Create User model", "Create API"],
-                "requirements": "Simple todo app"
+        return AgentResult(
+            success=True,
+            state_updates={
+                "plan": {
+                    "steps": ["Create User model", "Create API"],
+                    "requirements": "Simple todo app"
+                }
             },
-            "active_agent": "DataModelingAgent",
-            "messages": state.get("messages", []) + [
-                self.create_message("Created plan for todo app")
-            ]
-        }
+            next_agent="DataModelingAgent",
+            messages=[self.add_message("Created plan for todo app")]
+        )
 
 
 class MockDataModelingAgent(BaseAgent):
     """Mock data modeling agent for testing."""
     
-    name = "DataModelingAgent"
-    description = "Mock data modeling agent"
+    def __init__(self):
+        super().__init__(name="DataModelingAgent", description="Mock data modeling agent")
     
-    async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
+    async def execute(self, state: DevMasterState) -> AgentResult:
         """Generate mock SQL and hand off to Done."""
         artifacts = state.get("artifacts", {})
         artifacts["schema.sql"] = {
@@ -46,13 +48,12 @@ class MockDataModelingAgent(BaseAgent):
             "created_by": self.name
         }
         
-        return {
-            "artifacts": artifacts,
-            "active_agent": "Done",  # End the workflow
-            "messages": state.get("messages", []) + [
-                self.create_message("Generated database schema")
-            ]
-        }
+        return AgentResult(
+            success=True,
+            state_updates={"artifacts": artifacts},
+            next_agent="Done",  # End the workflow
+            messages=[self.add_message("Generated database schema")]
+        )
 
 
 class TestOrchestratorGraph:
@@ -63,23 +64,38 @@ class TestOrchestratorGraph:
         """Create an orchestrator with mock agents."""
         orchestrator = OrchestratorGraph()
         
-        # Clear and register mock agents
+        # Clear and register mock agents in registry
         agent_registry._agents.clear()
-        agent_registry.register(MockPlanningAgent)
-        agent_registry.register(MockDataModelingAgent)
+        agent_registry.register("PlanningAgent", MockPlanningAgent)
+        agent_registry.register("DataModelingAgent", MockDataModelingAgent)
         
-        # Register agents with orchestrator
-        orchestrator.register_agent(MockPlanningAgent())
-        orchestrator.register_agent(MockDataModelingAgent())
+        # Add agent nodes to orchestrator
+        orchestrator.add_node("PlanningAgent", NodeType.AGENT, MockPlanningAgent())
+        orchestrator.add_node("DataModelingAgent", NodeType.AGENT, MockDataModelingAgent())
+        
+        # Set up routing
+        orchestrator.set_entry_point("PlanningAgent")
+        orchestrator.add_conditional_edges(
+            "PlanningAgent",
+            lambda state: state.get("active_agent", "END"),
+            {"DataModelingAgent": "DataModelingAgent", "END": "END"}
+        )
+        orchestrator.add_conditional_edges(
+            "DataModelingAgent",
+            lambda state: state.get("active_agent", "END"),
+            {"Done": "END", "END": "END"}
+        )
         
         return orchestrator
     
     async def test_orchestrator_initialization(self, orchestrator):
         """Test orchestrator is properly initialized."""
-        assert len(orchestrator.agents) == 2
-        assert "PlanningAgent" in orchestrator.agents
-        assert "DataModelingAgent" in orchestrator.agents
-        assert orchestrator.graph is not None
+        # We have agent nodes + router nodes + END node
+        assert len(orchestrator.nodes) >= 4  # 2 agents + 2 routers + END
+        assert "PlanningAgent" in orchestrator.nodes
+        assert "DataModelingAgent" in orchestrator.nodes
+        assert "END" in orchestrator.nodes
+        assert orchestrator.entry_point == "PlanningAgent"
     
     async def test_fullstack_workflow_creation(self, orchestrator):
         """Test creating a fullstack development workflow."""
@@ -92,8 +108,11 @@ class TestOrchestratorGraph:
             "artifacts": {},
             "validation_results": {},
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "agent_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
         }
         
         # Execute the workflow
@@ -120,15 +139,19 @@ class TestOrchestratorGraph:
             "artifacts": {},
             "validation_results": {},
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "agent_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
         }
         
         result = await orchestrator.execute(initial_state)
         
         # Should handle gracefully
         assert result["error_count"] > 0
-        assert result["active_agent"] == "Done"
+        assert result["status"] == "failed"
+        assert "NonExistentAgent" in str(result["error_messages"])
     
     async def test_conditional_routing(self, orchestrator):
         """Test that conditional routing works correctly."""
@@ -142,19 +165,22 @@ class TestOrchestratorGraph:
             "artifacts": {},
             "validation_results": {},
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": ["PlanningAgent"],
-            "agent_history": []
+            "agent_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
         }
         
-        next_node = orchestrator._route_to_next_agent(state_to_data)
-        assert next_node == "DataModelingAgent"
+        # Find the PlanningAgent router node
+        router_node = orchestrator.nodes["PlanningAgent_router"]
+        assert router_node.router_func(state_to_data) == "DataModelingAgent"
         
-        # Test routing to Done
+        # Test routing to Done/END
         state_to_done = state_to_data.copy()
         state_to_done["active_agent"] = "Done"
         
-        next_node = orchestrator._route_to_next_agent(state_to_done)
-        assert next_node == "end"
+        assert router_node.router_func(state_to_done) == "Done"
     
     async def test_agent_history_tracking(self, orchestrator):
         """Test that agent history is properly tracked."""
@@ -167,28 +193,41 @@ class TestOrchestratorGraph:
             "artifacts": {},
             "validation_results": {},
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "agent_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
         }
         
         result = await orchestrator.execute(initial_state)
         
         # Check agent history
-        assert len(result["agent_history"]) >= 1
-        assert result["agent_history"][0]["from_agent"] == "PlanningAgent"
-        assert result["agent_history"][0]["to_agent"] == "DataModelingAgent"
+        assert len(result["agent_history"]) >= 2  # One for each agent
+        # BaseAgent stores history with 'agent' and 'status' fields
+        assert result["agent_history"][0]["agent"] == "PlanningAgent"
+        assert result["agent_history"][0]["status"] == "completed"
         assert "timestamp" in result["agent_history"][0]
     
-    async def test_error_propagation(self, orchestrator):
+    async def test_error_propagation(self):
         """Test that errors are properly propagated."""
+        # Create a fresh orchestrator for this test
+        error_orchestrator = OrchestratorGraph()
+        
         class ErrorAgent(BaseAgent):
-            name = "ErrorAgent"
-            description = "Agent that always errors"
+            def __init__(self):
+                super().__init__(name="ErrorAgent", description="Agent that always errors")
             
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
+            async def execute(self, state: DevMasterState) -> AgentResult:
                 raise RuntimeError("Intentional test error")
         
-        orchestrator.register_agent(ErrorAgent())
+        error_orchestrator.add_node("ErrorAgent", NodeType.AGENT, ErrorAgent())
+        error_orchestrator.set_entry_point("ErrorAgent")
+        error_orchestrator.add_conditional_edges(
+            "ErrorAgent",
+            lambda state: "END",
+            {"END": "END"}
+        )
         
         initial_state: DevMasterState = {
             "task_type": TaskType.CONVERSATIONAL_CHAT,
@@ -199,31 +238,44 @@ class TestOrchestratorGraph:
             "artifacts": {},
             "validation_results": {},
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "agent_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
         }
         
-        result = await orchestrator.execute(initial_state)
+        result = await error_orchestrator.execute(initial_state)
         
         assert result["error_count"] > 0
-        assert result["active_agent"] == "Done"
+        assert len(result["error_messages"]) > 0
+        assert "Intentional test error" in result["error_messages"][0]
         # Error should be logged but workflow should complete
     
-    async def test_chat_workflow(self, orchestrator):
+    async def test_chat_workflow(self):
         """Test simple chat workflow."""
-        class ChatAgent(BaseAgent):
-            name = "ChatAgent"
-            description = "Simple chat agent"
-            
-            async def _execute(self, state: DevMasterState) -> Dict[str, Any]:
-                return {
-                    "messages": state.get("messages", []) + [
-                        self.create_message("Hello! How can I help you?")
-                    ],
-                    "active_agent": "Done"
-                }
+        # Create a fresh orchestrator for this test
+        chat_orchestrator = OrchestratorGraph()
         
-        orchestrator.register_agent(ChatAgent())
+        class ChatAgent(BaseAgent):
+            def __init__(self):
+                super().__init__(name="ChatAgent", description="Simple chat agent")
+            
+            async def execute(self, state: DevMasterState) -> AgentResult:
+                return AgentResult(
+                    success=True,
+                    state_updates={},
+                    next_agent="Done",
+                    messages=[self.add_message("Hello! How can I help you?")]
+                )
+        
+        chat_orchestrator.add_node("ChatAgent", NodeType.AGENT, ChatAgent())
+        chat_orchestrator.set_entry_point("ChatAgent")
+        chat_orchestrator.add_conditional_edges(
+            "ChatAgent",
+            lambda state: "END" if state.get("active_agent") == "Done" else state.get("active_agent", "END"),
+            {"Done": "END", "END": "END"}
+        )
         
         initial_state: DevMasterState = {
             "task_type": TaskType.CONVERSATIONAL_CHAT,
@@ -234,11 +286,14 @@ class TestOrchestratorGraph:
             "artifacts": {},
             "validation_results": {},
             "error_count": 0,
+            "error_messages": [],
             "completed_agents": [],
-            "agent_history": []
+            "agent_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
         }
         
-        result = await orchestrator.execute(initial_state)
+        result = await chat_orchestrator.execute(initial_state)
         
         assert len(result["messages"]) == 1
         assert result["messages"][0]["content"] == "Hello! How can I help you?"

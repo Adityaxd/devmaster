@@ -9,7 +9,7 @@ from typing import Optional
 
 from .orchestrator import OrchestratorGraph, create_default_router, NodeType
 from .registry import agent_registry
-from .state import DevMasterState
+from ..core.state import DevMasterState
 
 
 def build_development_workflow() -> OrchestratorGraph:

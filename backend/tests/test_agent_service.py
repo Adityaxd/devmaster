@@ -2,11 +2,11 @@
 
 import pytest
 from datetime import datetime
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock, patch, AsyncMock, MagicMock
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 
-from app.services.agent_service import AgentService
+from app.services.agent_service import AgentService, agent_service
 from app.core.state import DevMasterState, TaskType
 from app.models import Project, Execution, ExecutionMessage, ExecutionArtifact
 from app.models.execution import ExecutionStatus
@@ -19,119 +19,169 @@ class TestAgentService:
     def mock_db_session(self):
         """Create a mock database session."""
         session = AsyncMock(spec=AsyncSession)
-        # Mock the context manager
-        session.__aenter__.return_value = session
-        session.__aexit__.return_value = None
         return session
     
     @pytest.fixture
-    def agent_service(self, mock_db_session):
-        """Create an agent service with mocked dependencies."""
-        return AgentService(mock_db_session)
+    def test_agent_service(self):
+        """Create an agent service instance for testing."""
+        service = AgentService()
+        # Clear any existing executions
+        service.active_executions.clear()
+        return service
     
     @pytest.fixture
-    def mock_project(self):
-        """Create a mock project."""
-        project = Mock(spec=Project)
-        project.id = uuid.uuid4()
-        project.name = "Test Project"
-        project.owner_id = uuid.uuid4()
-        return project
+    def initial_state(self) -> DevMasterState:
+        """Create initial state for testing."""
+        return {
+            "user_request": "Build a todo app",
+            "project_id": str(uuid.uuid4()),
+            "task_type": "CONVERSATIONAL_CHAT",
+            "active_agent": "IntentClassifier",
+            "next_agent": None,
+            "completed_agents": [],
+            "messages": [],
+            "plan": None,
+            "requirements": None,
+            "artifacts": {},
+            "validation_results": [],
+            "error_count": 0,
+            "error_messages": [],
+            "retry_count": 0,
+            "max_retries": 3,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "project_status": "initializing",
+            "agent_history": [],
+            "metadata": {},
+            "context": {}
+        }
     
-    async def test_execute_task_creates_execution(self, agent_service, mock_project):
+    @pytest.mark.asyncio
+    async def test_execute_task_creates_execution(self, test_agent_service, initial_state):
         """Test that execute_task creates an execution record."""
-        # Mock the orchestrator
-        with patch.object(agent_service.orchestrator, 'execute') as mock_execute:
-            mock_execute.return_value = {
-                "messages": [{"role": "assistant", "content": "Done"}],
-                "active_agent": "Done",
-                "error_count": 0,
-                "artifacts": {},
-                "plan": {"steps": ["test"]},
-                "completed_agents": ["PlanningAgent"],
-                "validation_results": {"passed": True}
-            }
-            
-            # Mock database operations
-            agent_service.db.add = Mock()
-            agent_service.db.commit = AsyncMock()
-            agent_service.db.refresh = AsyncMock()
+        # Mock workflow creation
+        with patch("app.services.agent_service.create_workflow_for_task") as mock_create_workflow:
+            mock_workflow = MagicMock()
+            mock_workflow.execute = AsyncMock(return_value={
+                **initial_state,
+                "status": "completed",
+                "messages": [{"role": "assistant", "content": "Task completed"}],
+                "completed_agents": ["IntentClassifier", "ChatAgent"]
+            })
+            mock_create_workflow.return_value = mock_workflow
             
             # Execute task
-            execution = await agent_service.execute_task(
-                project_id=mock_project.id,
+            result = await test_agent_service.execute_task(
                 user_request="Build a todo app",
-                task_type=TaskType.FULLSTACK_DEVELOPMENT
+                project_id=initial_state["project_id"]
             )
             
             # Verify execution was created
-            assert execution is not None
-            assert execution.project_id == mock_project.id
-            assert execution.user_request == "Build a todo app"
-            assert execution.task_type == TaskType.FULLSTACK_DEVELOPMENT
-            assert execution.status == ExecutionStatus.COMPLETED
+            assert "execution_id" in result
+            assert result["status"] == "completed"
+            assert result["task_type"] == "CONVERSATIONAL_CHAT"
+            assert len(result["messages"]) == 1
             
-            # Verify database operations
-            agent_service.db.add.assert_called_once()
-            agent_service.db.commit.assert_called()
+            # Verify execution is stored
+            execution_id = result["execution_id"]
+            assert execution_id in test_agent_service.active_executions
+            stored_execution = test_agent_service.active_executions[execution_id]
+            assert stored_execution["state"]["status"] == "completed"
     
-    async def test_execute_task_handles_errors(self, agent_service, mock_project):
+    @pytest.mark.asyncio
+    async def test_execute_task_handles_errors(self, test_agent_service, initial_state):
         """Test that execute_task handles orchestration errors."""
-        # Mock orchestrator to raise an error
-        with patch.object(agent_service.orchestrator, 'execute') as mock_execute:
-            mock_execute.side_effect = Exception("Orchestration failed")
+        # Mock workflow to raise an error
+        with patch("app.services.agent_service.create_workflow_for_task") as mock_create_workflow:
+            mock_workflow = MagicMock()
+            mock_workflow.execute = AsyncMock(side_effect=Exception("Workflow failed"))
+            mock_create_workflow.return_value = mock_workflow
             
-            # Mock database operations
-            agent_service.db.add = Mock()
-            agent_service.db.commit = AsyncMock()
-            agent_service.db.refresh = AsyncMock()
-            
-            # Execute should not raise but mark as failed
-            execution = await agent_service.execute_task(
-                project_id=mock_project.id,
+            # Execute should not raise but return error status
+            result = await test_agent_service.execute_task(
                 user_request="Build app",
-                task_type=TaskType.FULLSTACK_DEVELOPMENT
+                project_id=initial_state["project_id"]
             )
             
-            assert execution.status == ExecutionStatus.FAILED
-            assert execution.error_count > 0
-            assert len(execution.error_messages) > 0
+            assert result["status"] == "failed"
+            assert "error" in result
+            assert "Workflow failed" in result["error"]
+            
+            # Verify error is stored in execution
+            execution_id = result["execution_id"]
+            stored_execution = test_agent_service.active_executions[execution_id]
+            assert stored_execution["state"]["status"] == "failed"
+            assert len(stored_execution["state"]["errors"]) > 0
     
-    async def test_save_execution_messages(self, agent_service):
-        """Test saving execution messages to database."""
-        execution_id = uuid.uuid4()
-        messages = [
-            {
-                "role": "user",
-                "content": "Build a todo app"
-            },
-            {
-                "role": "assistant",
-                "content": "I'll help you build that",
-                "agent": "PlanningAgent"
-            }
-        ]
-        
-        # Mock database batch insert
-        agent_service.db.add_all = Mock()
-        agent_service.db.commit = AsyncMock()
-        
-        await agent_service._save_execution_messages(execution_id, messages)
-        
-        # Verify add_all was called with ExecutionMessage objects
-        agent_service.db.add_all.assert_called_once()
-        saved_messages = agent_service.db.add_all.call_args[0][0]
-        
-        assert len(saved_messages) == 2
-        assert all(isinstance(msg, ExecutionMessage) for msg in saved_messages)
-        assert saved_messages[0].role == "user"
-        assert saved_messages[0].content == "Build a todo app"
-        assert saved_messages[1].agent_name == "PlanningAgent"
+    @pytest.mark.asyncio
+    async def test_execute_task_no_workflow_available(self, test_agent_service):
+        """Test handling when no workflow is available for task type."""
+        with patch("app.services.agent_service.create_workflow_for_task") as mock_create_workflow:
+            mock_create_workflow.return_value = None
+            
+            result = await test_agent_service.execute_task(
+                user_request="Unknown task",
+                project_id=str(uuid.uuid4())
+            )
+            
+            assert result["status"] == "failed"
+            assert "No workflow available" in result["error"]
     
-    async def test_save_execution_artifacts(self, agent_service):
-        """Test saving execution artifacts to database."""
-        execution_id = uuid.uuid4()
-        artifacts = {
+    @pytest.mark.asyncio
+    async def test_get_execution_status(self, test_agent_service):
+        """Test retrieving execution status."""
+        # Create a test execution
+        execution_id = str(uuid.uuid4())
+        test_state: DevMasterState = {
+            "user_request": "Test",
+            "project_id": str(uuid.uuid4()),
+            "task_type": "CONVERSATIONAL_CHAT",
+            "active_agent": "TestAgent",
+            "status": "running",
+            "completed_agents": ["IntentClassifier"],
+            "messages": [{"role": "user", "content": "Test"}],
+            "artifacts": {"test.py": {"type": "code", "content": "print('test')"}},
+            "errors": [],
+            "last_update": datetime.utcnow().isoformat(),
+            "error_count": 0,
+            "validation_results": [],
+            "plan": None,
+            "requirements": None,
+            "retry_count": 0,
+            "max_retries": 3,
+            "start_time": datetime.utcnow().isoformat(),
+            "context": {},
+            "next_agent": None
+        }
+        
+        test_agent_service.active_executions[execution_id] = {
+            "state": test_state,
+            "created_at": datetime.utcnow()
+        }
+        
+        # Get status
+        status = await test_agent_service.get_execution_status(execution_id)
+        
+        assert status is not None
+        assert status["execution_id"] == execution_id
+        assert status["status"] == "running"
+        assert status["active_agent"] == "TestAgent"
+        assert status["completed_agents"] == ["IntentClassifier"]
+        assert status["artifacts"] == 1
+        assert status["errors"] == 0
+    
+    @pytest.mark.asyncio
+    async def test_get_execution_status_not_found(self, test_agent_service):
+        """Test getting status for non-existent execution."""
+        status = await test_agent_service.get_execution_status("non-existent-id")
+        assert status is None
+    
+    @pytest.mark.asyncio
+    async def test_get_execution_artifacts(self, test_agent_service):
+        """Test retrieving execution artifacts."""
+        # Create a test execution with artifacts
+        execution_id = str(uuid.uuid4())
+        test_artifacts = {
             "schema.sql": {
                 "type": "sql",
                 "path": "/db/schema.sql",
@@ -148,82 +198,45 @@ class TestAgentService:
             }
         }
         
-        # Mock database operations
-        agent_service.db.add_all = Mock()
-        agent_service.db.commit = AsyncMock()
+        test_agent_service.active_executions[execution_id] = {
+            "state": {
+                "artifacts": test_artifacts,
+                "status": "completed"
+            },
+            "created_at": datetime.utcnow()
+        }
         
-        await agent_service._save_execution_artifacts(execution_id, artifacts)
+        # Get artifacts
+        artifacts = await test_agent_service.get_execution_artifacts(execution_id)
         
-        # Verify artifacts were saved
-        agent_service.db.add_all.assert_called_once()
-        saved_artifacts = agent_service.db.add_all.call_args[0][0]
-        
-        assert len(saved_artifacts) == 2
-        assert all(isinstance(art, ExecutionArtifact) for art in saved_artifacts)
-        
-        # Check first artifact
-        schema_artifact = next(a for a in saved_artifacts if a.path == "/db/schema.sql")
-        assert schema_artifact.artifact_type == "sql"
-        assert schema_artifact.created_by == "DataModelingAgent"
-        assert schema_artifact.language == "sql"
+        assert artifacts is not None
+        assert len(artifacts) == 2
+        assert "schema.sql" in artifacts
+        assert "user.py" in artifacts
+        assert artifacts["schema.sql"]["type"] == "sql"
+        assert artifacts["user.py"]["created_by"] == "BackendLogicAgent"
     
-    async def test_get_execution_history(self, agent_service):
-        """Test retrieving execution history for a project."""
-        project_id = uuid.uuid4()
-        
-        # Mock database query
-        mock_query = Mock()
-        mock_result = Mock()
-        mock_executions = [
-            Mock(spec=Execution, id=uuid.uuid4(), status=ExecutionStatus.COMPLETED),
-            Mock(spec=Execution, id=uuid.uuid4(), status=ExecutionStatus.FAILED)
-        ]
-        
-        agent_service.db.query = Mock(return_value=mock_query)
-        mock_query.filter.return_value = mock_query
-        mock_query.order_by.return_value = mock_query
-        mock_query.limit.return_value = mock_query
-        mock_query.all = AsyncMock(return_value=mock_executions)
-        
-        # Get history
-        history = await agent_service.get_execution_history(project_id, limit=10)
-        
-        assert len(history) == 2
-        agent_service.db.query.assert_called_with(Execution)
-        mock_query.filter.assert_called()
+    @pytest.mark.asyncio
+    async def test_get_execution_artifacts_not_found(self, test_agent_service):
+        """Test getting artifacts for non-existent execution."""
+        artifacts = await test_agent_service.get_execution_artifacts("non-existent-id")
+        assert artifacts is None
     
-    async def test_get_execution_details(self, agent_service):
-        """Test retrieving detailed execution information."""
-        execution_id = uuid.uuid4()
-        
-        # Mock execution with relationships
-        mock_execution = Mock(spec=Execution)
-        mock_execution.id = execution_id
-        mock_execution.messages = [
-            Mock(spec=ExecutionMessage, content="Message 1"),
-            Mock(spec=ExecutionMessage, content="Message 2")
-        ]
-        mock_execution.artifacts = [
-            Mock(spec=ExecutionArtifact, path="/test.py")
-        ]
-        
-        agent_service.db.get = AsyncMock(return_value=mock_execution)
-        
-        # Get details
-        execution = await agent_service.get_execution_details(execution_id)
-        
-        assert execution == mock_execution
-        agent_service.db.get.assert_called_with(Execution, execution_id)
-    
-    async def test_workflow_state_tracking(self, agent_service, mock_project):
+    @pytest.mark.asyncio
+    async def test_workflow_state_tracking(self, test_agent_service):
         """Test that workflow state is properly tracked throughout execution."""
-        final_state = {
+        final_state: DevMasterState = {
+            "user_request": "Build app",
+            "project_id": str(uuid.uuid4()),
+            "task_type": "FULLSTACK_DEVELOPMENT",
+            "active_agent": "Done",
+            "status": "completed",
             "messages": [
                 {"role": "user", "content": "Build app"},
                 {"role": "assistant", "content": "Plan created", "agent": "PlanningAgent"}
             ],
-            "active_agent": "Done",
             "error_count": 0,
+            "errors": [],
             "artifacts": {
                 "schema.sql": {
                     "type": "sql",
@@ -233,36 +246,61 @@ class TestAgentService:
                 }
             },
             "plan": {"steps": ["Create models", "Build API"]},
-            "completed_agents": ["PlanningAgent", "DataModelingAgent"],
-            "validation_results": {"l1": "passed", "l2": "passed"},
-            "agent_history": [
-                {
-                    "from_agent": "PlanningAgent",
-                    "to_agent": "DataModelingAgent",
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-            ]
+            "requirements": "Build a todo app with user authentication",
+            "completed_agents": ["IntentClassifier", "PlanningAgent", "DataModelingAgent"],
+            "validation_results": [
+                {"type": "l1", "status": "passed"},
+                {"type": "l2", "status": "passed"}
+            ],
+            "retry_count": 0,
+            "max_retries": 3,
+            "start_time": datetime.utcnow().isoformat(),
+            "last_update": datetime.utcnow().isoformat(),
+            "context": {"test": "data"},
+            "next_agent": None
         }
         
-        with patch.object(agent_service.orchestrator, 'execute') as mock_execute:
-            mock_execute.return_value = final_state
-            
-            # Mock database operations
-            agent_service.db.add = Mock()
-            agent_service.db.commit = AsyncMock()
-            agent_service.db.refresh = AsyncMock()
-            agent_service.db.add_all = Mock()
+        with patch("app.services.agent_service.create_workflow_for_task") as mock_create_workflow:
+            mock_workflow = MagicMock()
+            mock_workflow.execute = AsyncMock(return_value=final_state)
+            mock_create_workflow.return_value = mock_workflow
             
             # Execute
-            execution = await agent_service.execute_task(
-                project_id=mock_project.id,
+            result = await test_agent_service.execute_task(
                 user_request="Build app",
-                task_type=TaskType.FULLSTACK_DEVELOPMENT
+                project_id=final_state["project_id"]
             )
             
-            # Verify state was properly stored
-            assert execution.completed_agents == ["PlanningAgent", "DataModelingAgent"]
-            assert execution.agent_history == final_state["agent_history"]
-            assert execution.artifacts_count == 1
-            assert execution.validation_results == {"l1": "passed", "l2": "passed"}
-            assert execution.final_state == final_state
+            # Verify state was properly tracked
+            assert result["status"] == "completed"
+            # Task type defaults to CONVERSATIONAL_CHAT for now until we implement IntentClassifier
+            assert result["task_type"] == "CONVERSATIONAL_CHAT"
+            assert len(result["messages"]) == 2
+            assert len(result["artifacts"]) == 1
+            assert result["errors"] == []
+            
+            # Verify execution is stored with complete state
+            execution_id = result["execution_id"]
+            stored_execution = test_agent_service.active_executions[execution_id]
+            stored_state = stored_execution["state"]
+            
+            assert stored_state["completed_agents"] == ["IntentClassifier", "PlanningAgent", "DataModelingAgent"]
+            assert stored_state["plan"] == {"steps": ["Create models", "Build API"]}
+            assert len(stored_state["validation_results"]) == 2
+            assert stored_state["status"] == "completed"
+
+
+class TestGlobalAgentService:
+    """Test the global agent_service instance."""
+    
+    def test_global_agent_service_exists(self):
+        """Test that global agent_service is available."""
+        assert agent_service is not None
+        assert isinstance(agent_service, AgentService)
+    
+    def test_global_agent_service_is_singleton(self):
+        """Test that we're using the same global instance."""
+        from app.services.agent_service import agent_service as service1
+        from app.services.agent_service import agent_service as service2
+        
+        assert service1 is service2

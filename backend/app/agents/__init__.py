@@ -7,7 +7,7 @@ All agents operate within a stateful, graph-based orchestration framework.
 
 from .base import BaseAgent, AgentState, AgentResult
 from .orchestrator import OrchestratorGraph
-from .state import DevMasterState
+from app.core.state import DevMasterState
 from .registry import agent_registry, register_agent
 
 __all__ = [
