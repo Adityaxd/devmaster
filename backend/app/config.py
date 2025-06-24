@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     api_v1_str: str = "/api/v1"
     
     # Database
-    database_url: str = "postgresql://devmaster:devmaster@db:5432/devmaster"
+    database_url: str = "postgresql://devmaster:devmaster@localhost:5433/devmaster"
+    async_database_url: str = "postgresql+asyncpg://devmaster:devmaster@localhost:5433/devmaster"
     
     # Security
     secret_key: str = "your-secret-key-here-change-in-production"
