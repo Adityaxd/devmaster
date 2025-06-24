@@ -6,7 +6,7 @@ from typing import Dict, Any
 import uuid
 import logging
 
-from ..core.orchestrator.graph import OrchestratorGraph
+from ..agents.orchestrator import OrchestratorGraph
 from ..core.agents.test_agents import EchoAgent, SequentialTestAgent
 from ..core.state import DevMasterState, TaskType, ProjectStatus
 from ..core.websocket import manager

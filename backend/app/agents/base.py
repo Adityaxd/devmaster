@@ -1,187 +1,190 @@
 """
-Base agent class for all DevMaster specialist agents.
-
-Following the Tech Bible, all agents inherit from this base class
-and operate on the shared DevMasterState.
+Base Agent Infrastructure
+Provides the foundation for all specialist agents in the DevMaster system
 """
-
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-from enum import Enum
 import logging
 import traceback
 
-from pydantic import BaseModel, Field
-
-from app.core.state import DevMasterState, Message, Artifact
-
-
-class AgentState(str, Enum):
-    """Possible states for an agent."""
-    IDLE = "idle"
-    RUNNING = "running"
-    WAITING = "waiting"  # Waiting for external resource
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class AgentResult(BaseModel):
-    """Result returned by an agent after execution."""
-    success: bool
-    state_updates: Dict[str, Any] = Field(default_factory=dict)
-    next_agent: Optional[str] = None
-    error: Optional[str] = None
-    artifacts_created: List[str] = Field(default_factory=list)
-    messages: List[Message] = Field(default_factory=list)
+from ..core.state import DevMasterState, AgentStatus, Message
 
 
 class BaseAgent(ABC):
     """
-    Base class for all DevMaster agents.
+    Abstract base class for all DevMaster agents.
     
-    Each agent:
-    1. Receives the full DevMasterState
-    2. Performs its specialized task
-    3. Updates relevant fields in the state
-    4. Returns control to the orchestrator
+    Following the Tech Bible principles:
+    - All agents operate on the shared DevMasterState
+    - Agent handoffs are done by updating the active_agent field
+    - No direct message passing between agents
     """
     
     def __init__(self, name: str, description: str):
+        """
+        Initialize the base agent.
+        
+        Args:
+            name: Unique name of the agent
+            description: Human-readable description of the agent's purpose
+        """
         self.name = name
         self.description = description
-        self.state = AgentState.IDLE
-        self.logger = logging.getLogger(f"agent.{name}")
-        
-    @abstractmethod
-    async def execute(self, state: DevMasterState) -> AgentResult:
+        self.logger = logging.getLogger(f"devmaster.agents.{name}")
+        self.status = AgentStatus.IDLE    
+    async def execute(self, state: DevMasterState) -> Dict[str, Any]:
         """
-        Execute the agent's primary task.
+        Execute the agent's main logic.
+        
+        This method handles:
+        1. Pre-execution setup
+        2. Error handling and recovery
+        3. State updates
+        4. Post-execution cleanup
         
         Args:
             state: The current DevMaster state
             
         Returns:
-            AgentResult containing state updates and control flow information
+            Dict containing the updated state fields
+        """
+        self.logger.info(f"Agent {self.name} starting execution")
+        self.status = AgentStatus.RUNNING
+        
+        # Record agent execution in history
+        execution_record = {
+            "agent": self.name,
+            "started_at": datetime.utcnow(),
+            "status": "running"
+        }
+        
+        try:
+            # Add system message about agent activation
+            self._add_system_message(
+                state, 
+                f"Agent '{self.name}' activated: {self.description}"
+            )
+            
+            # Execute the agent's specific logic
+            result = await self._execute_impl(state)
+            
+            # Update execution record
+            execution_record["completed_at"] = datetime.utcnow()
+            execution_record["status"] = "completed"
+            
+            self.status = AgentStatus.COMPLETED
+            self.logger.info(f"Agent {self.name} completed successfully")
+            
+            return result
+            
+        except Exception as e:
+            # Log the error
+            self.logger.error(f"Agent {self.name} failed: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            
+            # Update execution record
+            execution_record["completed_at"] = datetime.utcnow()
+            execution_record["status"] = "failed"
+            execution_record["error"] = str(e)
+            
+            self.status = AgentStatus.FAILED
+            
+            # Handle the error according to our philosophy
+            return self._handle_error(state, e)    
+    @abstractmethod
+    async def _execute_impl(self, state: DevMasterState) -> Dict[str, Any]:
+        """
+        The actual implementation of the agent's logic.
+        
+        This method should:
+        1. Read necessary information from the state
+        2. Perform its specific task
+        3. Return a dictionary of state updates
+        
+        Must be implemented by all concrete agents.
+        
+        Args:
+            state: The current DevMaster state
+            
+        Returns:
+            Dict containing state fields to update
         """
         pass
     
-    async def validate_preconditions(self, state: DevMasterState) -> bool:
+    def _handle_error(self, state: DevMasterState, error: Exception) -> Dict[str, Any]:
         """
-        Validate that the agent can execute given the current state.
-        Override in subclasses for specific validation.
-        """
-        return True
-    
-    async def run(self, state: DevMasterState) -> Dict[str, Any]:
-        """
-        Main entry point for agent execution with error handling.
+        Handle errors according to the DevMaster error philosophy.
         
-        Returns a dictionary of state updates to be merged into DevMasterState.
+        Args:
+            state: The current state
+            error: The exception that occurred
+            
+        Returns:
+            Dict containing error state updates
         """
-        self.state = AgentState.RUNNING
-        self.logger.info(f"Agent {self.name} starting execution")
+        error_count = state.get("error_count", 0) + 1
+        error_messages = state.get("error_messages", [])
+        error_messages.append(f"{self.name}: {str(error)}")
         
-        try:
-            # Validate preconditions
-            if not await self.validate_preconditions(state):
-                raise ValueError(f"Preconditions not met for agent {self.name}")
-            
-            # Execute agent logic
-            result = await self.execute(state)
-            
-            if result.success:
-                self.state = AgentState.COMPLETED
-                self.logger.info(f"Agent {self.name} completed successfully")
-            else:
-                self.state = AgentState.FAILED
-                self.logger.error(f"Agent {self.name} failed: {result.error}")
-            
-            # Prepare state updates
-            updates = result.state_updates.copy()
-            
-            # Add agent to completed list
-            completed = state.get("completed_agents", []).copy()
-            if self.name not in completed and result.success:
-                completed.append(self.name)
-                updates["completed_agents"] = completed
-            
-            # Update active agent
-            if result.next_agent:
-                updates["active_agent"] = result.next_agent
-            
-            # Add messages
-            if result.messages:
-                messages = state.get("messages", []).copy()
-                for msg in result.messages:
-                    messages.append(msg.model_dump())
-                updates["messages"] = messages
-            
-            # Update last update timestamp
-            updates["updated_at"] = datetime.utcnow().isoformat()
-            
-            # Update agent history
-            agent_history = state.get("agent_history", []).copy()
-            agent_history.append({
-                "agent": self.name,
-                "status": "completed" if result.success else "failed",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            updates["agent_history"] = agent_history
-            
-            return updates
-            
-        except Exception as e:
-            self.state = AgentState.FAILED
-            self.logger.error(f"Agent {self.name} encountered error: {str(e)}")
-            self.logger.debug(traceback.format_exc())
-            
-            # Return error state updates
-            error_messages = state.get("error_messages", []).copy()
-            error_messages.append(f"[{self.name}] {str(e)}")
-            
-            # Also update agent history with the error
-            agent_history = state.get("agent_history", []).copy()
-            agent_history.append({
-                "agent": self.name,
-                "status": "failed",
-                "error": str(e),
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            
+        # Determine next action based on error count
+        if error_count < 3:
+            # Retry with the same agent
             return {
+                "error_count": error_count,
                 "error_messages": error_messages,
-                "error_count": state.get("error_count", 0) + 1,
-                "agent_history": agent_history,
-                "updated_at": datetime.utcnow().isoformat()
+                "active_agent": self.name  # Retry same agent
             }
+        else:
+            # Too many errors, requires human intervention
+            return {
+                "error_count": error_count,
+                "error_messages": error_messages,
+                "project_status": "error_requires_human_input",
+                "active_agent": "Done"
+            }    
+    def _add_system_message(self, state: DevMasterState, content: str) -> None:
+        """
+        Add a system message to the conversation.
+        
+        Args:
+            state: The current state
+            content: The message content
+        """
+        message: Message = {
+            "id": f"msg_{datetime.utcnow().timestamp()}",
+            "role": "system",
+            "content": content,
+            "timestamp": datetime.utcnow(),
+            "agent_name": self.name,
+            "metadata": {}
+        }
+        state["messages"].append(message)
     
-    def add_message(self, content: str, role: str = "agent") -> Message:
-        """Helper to create a message from this agent."""
-        return Message(
-            role=role,
-            content=content,
-            timestamp=datetime.utcnow(),
-            agent_name=self.name
-        )
+    def hand_off_to(self, agent_name: str) -> Dict[str, Any]:
+        """
+        Hand off control to another agent.
+        
+        This is the ONLY way agents should transfer control,
+        following the LangGraph pattern.
+        
+        Args:
+            agent_name: Name of the agent to hand off to
+            
+        Returns:
+            Dict with active_agent update
+        """
+        self.logger.info(f"Handing off from {self.name} to {agent_name}")
+        return {"active_agent": agent_name}
     
-    def create_artifact(
-        self,
-        artifact_id: str,
-        artifact_type: str,
-        path: str,
-        content: str,
-        language: Optional[str] = None
-    ) -> Artifact:
-        """Helper to create an artifact."""
-        now = datetime.utcnow()
-        return Artifact(
-            id=artifact_id,
-            type=artifact_type,
-            path=path,
-            content=content,
-            language=language,
-            created_at=now,
-            updated_at=now,
-            created_by=self.name
-        )
+    def complete_and_stop(self) -> Dict[str, Any]:
+        """
+        Mark the workflow as complete and stop execution.
+        
+        Returns:
+            Dict with completion status
+        """
+        return {
+            "active_agent": "Done",
+            "project_status": "completed"
+        }

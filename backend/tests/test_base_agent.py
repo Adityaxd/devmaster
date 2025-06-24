@@ -5,7 +5,7 @@ from typing import Dict, Any
 import asyncio
 
 from .base import BaseAgent
-from ..state import DevMasterState
+from ..core.state import DevMasterState
 
 
 class EchoAgent(BaseAgent):

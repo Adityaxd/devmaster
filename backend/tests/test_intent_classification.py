@@ -9,7 +9,7 @@ import pytest
 from app.agents.classifiers import IntentClassifier, CapabilityRouter
 from app.agents.specialists import ChatAgent
 from app.core.state import DevMasterState, TaskType, AgentStatus
-from app.core.orchestrator.graph import OrchestratorGraph
+from app.agents.orchestrator import OrchestratorGraph
 from app.core.events import EventBus
 
 # Skip all tests in this file until Week 3 implementation

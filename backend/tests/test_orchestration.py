@@ -5,7 +5,7 @@ import pytest
 import asyncio
 from datetime import datetime
 
-from app.core.orchestrator.graph import OrchestratorGraph
+from app.agents.orchestrator import OrchestratorGraph
 from app.core.agents.test_agents import EchoAgent, SequentialTestAgent
 from app.core.state import DevMasterState, TaskType, ProjectStatus
 

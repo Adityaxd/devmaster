@@ -1,283 +1,211 @@
 """
-LangGraph-style orchestrator for DevMaster agent coordination.
-
-This is the core orchestration engine that manages agent execution,
-state transitions, and control flow using a graph-based approach.
+DevMaster Orchestration Engine
+Implements LangGraph-style state machine for agent coordination
 """
-
-from typing import Dict, Any, Optional, Callable, List, Literal
-from datetime import datetime
-import logging
-import asyncio
+from typing import Dict, Any, Callable, Optional, List, Literal
 from enum import Enum
+import logging
+from datetime import datetime
 
-from app.core.state import DevMasterState
+from langgraph.graph import StateGraph, END
+from ..core.state import DevMasterState, ProjectStatus
 from .base import BaseAgent
-from .registry import agent_registry
 
 
-class NodeType(str, Enum):
-    """Types of nodes in the orchestration graph."""
-    AGENT = "agent"
-    ROUTER = "router"
-    END = "end"
-
-
-class Edge:
-    """Represents an edge in the orchestration graph."""
-    
-    def __init__(
-        self,
-        source: str,
-        target: str,
-        condition: Optional[Callable[[DevMasterState], bool]] = None
-    ):
-        self.source = source
-        self.target = target
-        self.condition = condition
-    
-    def should_traverse(self, state: DevMasterState) -> bool:
-        """Check if this edge should be traversed given the current state."""
-        if self.condition is None:
-            return True
-        return self.condition(state)
-
-
-class Node:
-    """Represents a node in the orchestration graph."""
-    
-    def __init__(
-        self,
-        name: str,
-        node_type: NodeType,
-        agent: Optional[BaseAgent] = None,
-        router_func: Optional[Callable[[DevMasterState], str]] = None
-    ):
-        self.name = name
-        self.type = node_type
-        self.agent = agent
-        self.router_func = router_func
-        self.edges: List[Edge] = []
-    
-    def add_edge(self, edge: Edge):
-        """Add an outgoing edge from this node."""
-        self.edges.append(edge)
+logger = logging.getLogger("devmaster.orchestrator")
 
 
 class OrchestratorGraph:
     """
-    LangGraph-style orchestrator for managing agent execution flow.
+    The core orchestration engine for DevMaster.
     
-    This implements a stateful graph where:
-    - Nodes represent agents or routing decisions
-    - Edges represent transitions with optional conditions
-    - State flows through the graph, being transformed by each node
+    Following the Tech Bible:
+    - Uses LangGraph for ALL multi-agent orchestration
+    - No custom orchestrator classes with manual loops
+    - All workflows modeled as a StateGraph
+    - Agent handoffs via active_agent field
     """
     
-    def __init__(self, name: str = "DevMasterOrchestrator"):
-        self.name = name
-        self.nodes: Dict[str, Node] = {}
-        self.entry_point: Optional[str] = None
-        self.logger = logging.getLogger(f"orchestrator.{name}")
-        
-        # Add the special END node
-        self.add_node("END", NodeType.END)
-    
-    def add_node(
-        self,
-        name: str,
-        node_type: NodeType,
-        agent: Optional[BaseAgent] = None,
-        router_func: Optional[Callable[[DevMasterState], str]] = None
-    ) -> None:
-        """Add a node to the orchestration graph."""
-        if name in self.nodes:
-            raise ValueError(f"Node {name} already exists")
-        
-        node = Node(name, node_type, agent, router_func)
-        self.nodes[name] = node
-        self.logger.debug(f"Added node: {name} (type: {node_type})")
-    
-    def add_edge(
-        self,
-        source: str,
-        target: str,
-        condition: Optional[Callable[[DevMasterState], bool]] = None
-    ) -> None:
-        """Add an edge between two nodes."""
-        if source not in self.nodes:
-            raise ValueError(f"Source node {source} not found")
-        if target not in self.nodes:
-            raise ValueError(f"Target node {target} not found")
-        
-        edge = Edge(source, target, condition)
-        self.nodes[source].add_edge(edge)
-        self.logger.debug(f"Added edge: {source} -> {target}")
-    
-    def add_conditional_edges(
-        self,
-        source: str,
-        router: Callable[[DevMasterState], str],
-        routes: Dict[str, str]
-    ) -> None:
+    def __init__(self):
+        """Initialize the orchestrator graph."""
+        self.agents: Dict[str, BaseAgent] = {}
+        self.graph: Optional[StateGraph] = None
+        self.compiled_graph = None
+        self._build_graph()    
+    def register_agent(self, agent: BaseAgent) -> None:
         """
-        Add conditional routing from a node.
+        Register an agent with the orchestrator.
         
-        The router function determines which route to take,
-        and routes maps the router output to target nodes.
+        Args:
+            agent: The agent instance to register
         """
-        if source not in self.nodes:
-            raise ValueError(f"Source node {source} not found")
+        if agent.name in self.agents:
+            raise ValueError(f"Agent {agent.name} already registered")
         
-        # Create a router node
-        router_name = f"{source}_router"
-        self.add_node(router_name, NodeType.ROUTER, router_func=router)
+        self.agents[agent.name] = agent
+        logger.info(f"Registered agent: {agent.name}")
         
-        # Connect source to router
-        self.add_edge(source, router_name)
+        # Rebuild the graph with the new agent
+        self._build_graph()
+    
+    def _build_graph(self) -> None:
+        """
+        Build the LangGraph state machine.
         
-        # Connect router to all possible targets
-        for route_key, target in routes.items():
-            if target not in self.nodes:
-                raise ValueError(f"Target node {target} not found")
+        This creates nodes for each agent and sets up conditional routing.
+        """
+        if not self.agents:
+            return
+        
+        # Create a new state graph
+        self.graph = StateGraph(DevMasterState)
+        
+        # Add a node for each registered agent
+        for agent_name, agent in self.agents.items():
+            self.graph.add_node(agent_name, self._create_node_function(agent))
+        
+        # Add the final node
+        self.graph.add_node("Done", self._final_node)
+        
+        # Set up conditional routing from each agent
+        for agent_name in self.agents:
+            self.graph.add_conditional_edges(
+                agent_name,
+                self._route_to_next_agent,
+                # Create routing map: each agent can go to any other agent or Done
+                {name: name for name in list(self.agents.keys()) + ["Done"]}
+            )
+        
+        # Set entry point - we need a start node that routes to the initial agent
+        self.graph.add_node("START", self._start_node)
+        self.graph.set_entry_point("START")
+        
+        # Add conditional edge from START to route to initial agent
+        self.graph.add_conditional_edges(
+            "START",
+            self._route_to_next_agent,
+            {name: name for name in list(self.agents.keys()) + ["Done"]}
+        )
+        
+        # Compile the graph
+        self.compiled_graph = self.graph.compile()    
+    def _create_node_function(self, agent: BaseAgent) -> Callable:
+        """
+        Create a node function for an agent.
+        
+        Args:
+            agent: The agent instance
             
-            # Edge condition checks if router output matches route key
-            condition = lambda state, key=route_key: router(state) == key
-            self.add_edge(router_name, target, condition)
+        Returns:
+            Async function that executes the agent
+        """
+        async def node_function(state: DevMasterState) -> Dict[str, Any]:
+            """Execute the agent and return state updates."""
+            logger.info(f"Executing agent: {agent.name}")
+            
+            # Execute the agent
+            updates = await agent.execute(state)
+            
+            # Ensure we have an updated_at timestamp
+            updates["updated_at"] = datetime.utcnow()
+            
+            # Add agent execution to history
+            agent_history = state.get("agent_history", [])
+            agent_history.append({
+                "agent": agent.name,
+                "timestamp": datetime.utcnow(),
+                "updates": list(updates.keys())
+            })
+            updates["agent_history"] = agent_history
+            
+            return updates
+        
+        return node_function
     
-    def set_entry_point(self, node_name: str) -> None:
-        """Set the entry point for the graph execution."""
-        if node_name not in self.nodes:
-            raise ValueError(f"Node {node_name} not found")
-        self.entry_point = node_name
-        self.logger.debug(f"Set entry point: {node_name}")
+    def _start_node(self, state: DevMasterState) -> Dict[str, Any]:
+        """
+        The start node that initializes the workflow.
+        
+        Args:
+            state: The current state
+            
+        Returns:
+            Initial state updates
+        """
+        logger.info("Starting workflow")
+        return {}
+    
+    def _final_node(self, state: DevMasterState) -> Dict[str, Any]:
+        """
+        The final node that marks workflow completion.
+        
+        Args:
+            state: The current state
+            
+        Returns:
+            Final state updates
+        """
+        logger.info("Workflow completed")
+        return {
+            "project_status": ProjectStatus.COMPLETED,
+            "updated_at": datetime.utcnow()
+        }    
+    def _route_to_next_agent(self, state: DevMasterState) -> str:
+        """
+        Determine the next agent to execute based on the state.
+        
+        This is the "brain" of the router. It checks the active_agent field
+        to determine where to route control next.
+        
+        Args:
+            state: The current state
+            
+        Returns:
+            Name of the next node to execute
+        """
+        next_agent = state.get("active_agent", "Done")
+        
+        # Validate the agent exists
+        if next_agent not in self.agents and next_agent != "Done":
+            logger.error(f"Unknown agent: {next_agent}")
+            return "Done"
+        
+        logger.info(f"Routing to: {next_agent}")
+        return next_agent
     
     async def execute(self, initial_state: DevMasterState) -> DevMasterState:
         """
         Execute the orchestration graph with the given initial state.
         
-        Returns the final state after all agents have completed.
+        Args:
+            initial_state: The initial state to start with
+            
+        Returns:
+            The final state after all agents have executed
         """
-        if not self.entry_point:
-            raise ValueError("Entry point not set")
+        if not self.compiled_graph:
+            raise RuntimeError("No agents registered")
         
-        state = initial_state.copy()
-        # Use active_agent from state if present, otherwise use entry_point
-        current_node_name = state.get("active_agent", self.entry_point)
+        # Ensure we have required fields
+        if "active_agent" not in initial_state:
+            raise ValueError("initial_state must have 'active_agent' field")
         
-        # Initialize execution metadata
-        state["start_time"] = datetime.utcnow().isoformat()
-        state["status"] = "executing"
-        state["completed_agents"] = []
-        state["errors"] = []
-        state["error_count"] = 0
+        # Initialize state fields if not present
+        initial_state.setdefault("messages", [])
+        initial_state.setdefault("artifacts", {})
+        initial_state.setdefault("validation_results", {})
+        initial_state.setdefault("agent_history", [])
+        initial_state.setdefault("error_count", 0)
+        initial_state.setdefault("error_messages", [])
+        initial_state.setdefault("created_at", datetime.utcnow())
+        initial_state.setdefault("updated_at", datetime.utcnow())
+        initial_state.setdefault("metadata", {})
         
-        self.logger.info(f"Starting orchestration from {current_node_name}")
+        # Execute the graph
+        logger.info(f"Starting orchestration with agent: {initial_state['active_agent']}")
         
-        while current_node_name != "END":
-            # Check if node exists
-            if current_node_name not in self.nodes:
-                self.logger.error(f"Node {current_node_name} not found")
-                state["status"] = "failed"
-                state["error_count"] = state.get("error_count", 0) + 1
-                state["error_messages"] = state.get("error_messages", []) + [f"Node {current_node_name} not found"]
-                break
-            
-            node = self.nodes[current_node_name]
-            self.logger.info(f"Executing node: {current_node_name} (type: {node.type})")
-            
-            try:
-                if node.type == NodeType.AGENT and node.agent:
-                    # Execute agent and update state
-                    state["active_agent"] = node.name
-                    updates = await node.agent.run(state)
-                    state.update(updates)
-                    
-                elif node.type == NodeType.ROUTER and node.router_func:
-                    # Router nodes don't modify state, just determine next node
-                    pass
-                
-                # Determine next node
-                next_node = self._get_next_node(node, state)
-                
-                if next_node is None:
-                    self.logger.warning(f"No valid edge from {current_node_name}")
-                    break
-                
-                # Handle the "Done" mapping here as well
-                if next_node == "Done":
-                    next_node = "END"
-                    
-                current_node_name = next_node
-                
-            except Exception as e:
-                self.logger.error(f"Error in node {current_node_name}: {str(e)}")
-                state["status"] = "failed"
-                state["error_count"] = state.get("error_count", 0) + 1
-                
-                # Check if we should retry
-                if state["error_count"] < state.get("max_retries", 3):
-                    self.logger.info(f"Retrying node {current_node_name}")
-                    await asyncio.sleep(1)  # Brief delay before retry
-                    continue
-                else:
-                    break
+        # Run the graph - it will handle all routing and execution
+        final_state = await self.compiled_graph.ainvoke(initial_state)
         
-        # Set final status
-        if state["status"] == "executing":
-            state["status"] = "completed"
-        
-        state["last_update"] = datetime.utcnow().isoformat()
-        
-        self.logger.info(f"Orchestration completed with status: {state['status']}")
-        return state
-    
-    def _get_next_node(self, node: Node, state: DevMasterState) -> Optional[str]:
-        """Determine the next node to execute based on the current node and state."""
-        # Check for explicit next_agent override in state
-        if "next_agent" in state and state["next_agent"]:
-            next_agent = state["next_agent"]
-            state["next_agent"] = None  # Clear the override
-            # Map "Done" to "END"
-            if next_agent == "Done":
-                return "END"
-            return next_agent
-        
-        # For router nodes, use the router function
-        if node.type == NodeType.ROUTER and node.router_func:
-            return node.router_func(state)
-        
-        # Otherwise, find the first valid edge
-        for edge in node.edges:
-            if edge.should_traverse(state):
-                return edge.target
-        
-        return None
-    
-    def visualize(self) -> str:
-        """Generate a text representation of the graph for debugging."""
-        lines = [f"Orchestration Graph: {self.name}"]
-        lines.append(f"Entry Point: {self.entry_point}")
-        lines.append("\nNodes:")
-        
-        for name, node in self.nodes.items():
-            lines.append(f"  - {name} ({node.type})")
-            if node.agent:
-                lines.append(f"    Agent: {node.agent.name}")
-            for edge in node.edges:
-                lines.append(f"    -> {edge.target}")
-        
-        return "\n".join(lines)
-
-
-def create_default_router(state: DevMasterState) -> str:
-    """
-    Default routing function that uses the active_agent field.
-    
-    This is the standard LangGraph pattern for agent handoffs.
-    """
-    if agent_name := state.get("active_agent"):
-        if agent_name == "Done":
-            return "END"
-        return agent_name
-    return "END"
+        logger.info("Orchestration completed")
+        return final_state

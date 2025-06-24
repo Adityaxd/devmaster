@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 from app.agents.base import BaseAgent
 from app.core.state import DevMasterState, TaskType, AgentStatus
+from app.core.llm import get_llm_client
 import json
 import re
 from datetime import datetime, timezone
@@ -62,129 +63,131 @@ class IntentClassifier(BaseAgent):
             name="IntentClassifier",
             description="Analyzes user requests to determine intent and task type"
         )
+        self.llm_client = get_llm_client()
     
-    # Keywords and patterns for each TaskType
-    INTENT_PATTERNS = {
-        TaskType.FULLSTACK_DEVELOPMENT: {
-            "keywords": [
-                "build", "create", "develop", "app", "application", "website",
-                "platform", "system", "full-stack", "fullstack", "web app",
-                "crud", "api", "database", "frontend", "backend"
-            ],
-            "patterns": [
-                r"build\s+(?:me\s+)?(?:a|an)\s+\w+\s+(?:app|application|platform|system)",
-                r"create\s+(?:a|an)\s+\w+\s+(?:for|that|with)",
-                r"i\s+(?:need|want)\s+(?:a|an)\s+\w+\s+(?:app|application|system)",
-                r"develop\s+(?:a|an)\s+\w+\s+(?:platform|service|api)"
-            ]
-        },
-        TaskType.BACKEND_ONLY: {
-            "keywords": [
-                "api", "backend", "server", "endpoint", "microservice",
-                "rest", "graphql", "service", "database schema", "migration"
-            ],
-            "patterns": [
-                r"(?:create|build|design)\s+(?:an?\s+)?api\s+(?:for|that)",
-                r"backend\s+(?:service|api|server)\s+(?:for|that)",
-                r"database\s+(?:schema|design|structure)\s+(?:for|that)",
-                r"rest(?:ful)?\s+api\s+(?:for|that|with)"
-            ]
-        },
-        TaskType.FRONTEND_ONLY: {
-            "keywords": [
-                "ui", "interface", "frontend", "react", "component",
-                "design", "layout", "page", "view", "dashboard", "landing"
-            ],
-            "patterns": [
-                r"(?:create|build|design)\s+(?:a|an|the)?\s*(?:ui|interface|frontend)",
-                r"react\s+(?:component|app|page)\s+(?:for|that)",
-                r"(?:landing|dashboard|admin)\s+(?:page|interface)",
-                r"user\s+interface\s+(?:for|that|with)"
-            ]
-        },
-        TaskType.CODE_REVIEW: {
-            "keywords": [
-                "review", "check", "analyze", "improve", "refactor",
-                "optimize", "fix", "debug", "issue", "problem", "error"
-            ],
-            "patterns": [
-                r"review\s+(?:my|this|the)\s+code",
-                r"check\s+(?:my|this|the)\s+(?:code|implementation)",
-                r"(?:find|fix)\s+(?:bugs?|issues?|problems?|errors?)",
-                r"improve\s+(?:my|this|the)\s+(?:code|implementation)"
-            ]
-        },
-        TaskType.DEBUGGING: {
-            "keywords": [
-                "debug", "error", "bug", "issue", "problem", "crash",
-                "not working", "broken", "fail", "exception", "stack trace"
-            ],
-            "patterns": [
-                r"(?:debug|fix)\s+(?:this|my|the)\s+(?:error|bug|issue)",
-                r"(?:getting|have|got)\s+(?:an?\s+)?error",
-                r"(?:is|it's)\s+not\s+working",
-                r"(?:help|assist)\s+(?:me\s+)?(?:debug|fix)"
-            ]
-        },
-        TaskType.DOCUMENTATION: {
-            "keywords": [
-                "document", "docs", "readme", "guide", "tutorial",
-                "explain", "describe", "write documentation", "api docs"
-            ],
-            "patterns": [
-                r"(?:write|create|generate)\s+(?:documentation|docs)",
-                r"document\s+(?:my|this|the)\s+(?:code|api|project)",
-                r"(?:create|write)\s+(?:a|an)?\s*readme",
-                r"(?:api|code)\s+documentation"
-            ]
-        },
-        TaskType.TESTING: {
-            "keywords": [
-                "test", "testing", "unit test", "integration test",
-                "test case", "pytest", "jest", "coverage", "qa"
-            ],
-            "patterns": [
-                r"(?:write|create|generate)\s+(?:tests?|test cases?)",
-                r"(?:unit|integration|e2e)\s+tests?\s+(?:for|that)",
-                r"test\s+(?:my|this|the)\s+(?:code|function|component)",
-                r"(?:add|create)\s+test\s+coverage"
-            ]
-        },
-        TaskType.DEPLOYMENT: {
-            "keywords": [
-                "deploy", "deployment", "host", "hosting", "production",
-                "docker", "kubernetes", "ci/cd", "devops", "release"
-            ],
-            "patterns": [
-                r"deploy\s+(?:my|this|the)\s+(?:app|application|project)",
-                r"(?:set\s*up|setup)\s+(?:deployment|ci\/?cd)",
-                r"host\s+(?:my|this|the)\s+(?:app|application)",
-                r"(?:production|staging)\s+(?:deployment|release)"
-            ]
-        },
-        TaskType.CONVERSATIONAL_CHAT: {
-            "keywords": [
-                "hello", "hi", "help", "what", "how", "why", "when",
-                "explain", "tell me", "can you", "please"
-            ],
-            "patterns": [
-                r"^(?:hi|hello|hey)",
-                r"^(?:what|how|why|when)\s+(?:is|are|do|does|can)",
-                r"^(?:explain|tell\s+me|help\s+me\s+understand)",
-                r"^(?:can\s+you|could\s+you|would\s+you)"
-            ]
-        }
-    }
+    async def _analyze_prompt_with_llm(self, prompt: str) -> ScopeIntent:
+        """Analyze the user prompt using LLM to determine intent."""
+        
+        # Create the system prompt
+        system_prompt = """You are an intent classification agent for a software development platform.
+        
+Your task is to analyze user requests and classify them into one of these categories:
+- FULLSTACK_DEVELOPMENT: Building complete applications with frontend and backend
+- BACKEND_ONLY: API development, database design, server-side logic
+- FRONTEND_ONLY: UI/UX development, React components, user interfaces
+- CODE_REVIEW: Reviewing and improving existing code
+- DEBUGGING: Finding and fixing bugs or errors
+- DOCUMENTATION: Writing documentation, READMEs, or guides
+- TESTING: Writing unit tests, integration tests, or test cases
+- DEPLOYMENT: Setting up deployment, CI/CD, hosting
+- CONVERSATIONAL_CHAT: General questions, help, or casual conversation
+
+Respond with a JSON object containing:
+{
+    "primary_intent": "ONE_OF_THE_ABOVE_CATEGORIES",
+    "confidence": 0.0-1.0,
+    "keywords": ["relevant", "keywords", "from", "prompt"],
+    "complexity": "simple|medium|complex",
+    "requires_context": true|false,
+    "sub_intents": ["SECONDARY_CATEGORIES_IF_ANY"],
+    "reasoning": "Brief explanation of your classification"
+}"""
+
+        # Create the user prompt
+        classification_prompt = f"""Analyze this user request and classify the intent:
+
+User Request: "{prompt}"
+
+Provide your classification as a JSON object."""
+
+        try:
+            # Get LLM response
+            response = await self.llm_client.complete(
+                prompt=classification_prompt,
+                system_prompt=system_prompt,
+                temperature=0.3,  # Lower temperature for more consistent classification
+                use_cheap_model=True  # Use cheaper model for classification
+            )
+            
+            # Parse the JSON response
+            # First try to extract JSON from the response
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+            else:
+                # Fallback if no JSON found
+                raise ValueError("No JSON found in LLM response")
+            
+            # Map the string intent to TaskType enum
+            primary_intent = TaskType(result["primary_intent"])
+            
+            # Extract sub_intents and map to TaskType
+            sub_intents = []
+            for sub_intent_str in result.get("sub_intents", []):
+                try:
+                    sub_intents.append(TaskType(sub_intent_str))
+                except ValueError:
+                    # Skip invalid task types
+                    pass
+            
+            return ScopeIntent(
+                primary_intent=primary_intent,
+                confidence=result.get("confidence", 0.8),
+                keywords=result.get("keywords", []),
+                complexity=result.get("complexity", "medium"),
+                requires_context=result.get("requires_context", False),
+                sub_intents=sub_intents,
+                metadata={
+                    "prompt_length": len(prompt),
+                    "reasoning": result.get("reasoning", ""),
+                    "analyzed_at": datetime.now(timezone.utc).isoformat(),
+                    "llm_used": True
+                }
+            )
+            
+        except Exception as e:
+            self.logger.warning(f"LLM classification failed: {str(e)}. Falling back to pattern matching.")
+            # Fall back to pattern matching
+            return await self._analyze_prompt_pattern_matching(prompt)
     
-    async def _analyze_prompt(self, prompt: str) -> ScopeIntent:
-        """Analyze the user prompt to determine intent."""
+    async def _analyze_prompt_pattern_matching(self, prompt: str) -> ScopeIntent:
+        """Fallback pattern matching for when LLM is unavailable."""
         prompt_lower = prompt.lower().strip()
+        
+        # Keywords and patterns for each TaskType
+        INTENT_PATTERNS = {
+            TaskType.FULLSTACK_DEVELOPMENT: {
+                "keywords": [
+                    "build", "create", "develop", "app", "application", "website",
+                    "platform", "system", "full-stack", "fullstack", "web app",
+                    "crud", "api", "database", "frontend", "backend"
+                ],
+                "patterns": [
+                    r"build\s+(?:me\s+)?(?:a|an)\s+\w+\s+(?:app|application|platform|system)",
+                    r"create\s+(?:a|an)\s+\w+\s+(?:for|that|with)",
+                    r"i\s+(?:need|want)\s+(?:a|an)\s+\w+\s+(?:app|application|system)",
+                    r"develop\s+(?:a|an)\s+\w+\s+(?:platform|service|api)"
+                ]
+            },
+            TaskType.CONVERSATIONAL_CHAT: {
+                "keywords": [
+                    "hello", "hi", "help", "what", "how", "why", "when",
+                    "explain", "tell me", "can you", "please"
+                ],
+                "patterns": [
+                    r"^(?:hi|hello|hey)",
+                    r"^(?:what|how|why|when)\s+(?:is|are|do|does|can)",
+                    r"^(?:explain|tell\s+me|help\s+me\s+understand)",
+                    r"^(?:can\s+you|could\s+you|would\s+you)"
+                ]
+            }
+        }
         
         # Score each TaskType based on keyword and pattern matching
         scores: Dict[TaskType, float] = {}
         matched_keywords: Dict[TaskType, List[str]] = {}
         
-        for task_type, config in self.INTENT_PATTERNS.items():
+        for task_type, config in INTENT_PATTERNS.items():
             score = 0.0
             keywords_found = []
             
@@ -233,7 +236,8 @@ class IntentClassifier(BaseAgent):
             metadata={
                 "prompt_length": len(prompt),
                 "all_scores": {k.value: v for k, v in scores.items()},
-                "analyzed_at": datetime.now(timezone.utc).isoformat()
+                "analyzed_at": datetime.now(timezone.utc).isoformat(),
+                "llm_used": False
             }
         )
     
@@ -277,8 +281,8 @@ class IntentClassifier(BaseAgent):
         if not user_request:
             raise ValueError("No user request found in state")
         
-        # Analyze the prompt
-        intent = await self._analyze_prompt(user_request)
+        # Analyze the prompt (try LLM first, fall back to patterns)
+        intent = await self._analyze_prompt_with_llm(user_request)
         
         # Prepare the message
         message = {
@@ -293,6 +297,12 @@ class IntentClassifier(BaseAgent):
         # Update state
         messages = state.get("messages", []).copy()
         messages.append(message)
+        
+        # Log the classification
+        self.logger.info(
+            f"Intent classified: {intent.primary_intent.value} "
+            f"(confidence: {intent.confidence}, complexity: {intent.complexity})"
+        )
         
         return {
             "messages": messages,

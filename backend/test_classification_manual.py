@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.agents.classifiers import IntentClassifier, CapabilityRouter
 from app.agents.specialists import ChatAgent
 from app.core.state import DevMasterState
-from app.core.orchestrator.graph import OrchestratorGraph
+from app.agents.orchestrator import OrchestratorGraph
 from app.core.events import EventBus
 
 

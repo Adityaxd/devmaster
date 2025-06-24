@@ -17,6 +17,9 @@ langgraph>=0.2.0
 langchain==0.2.5
 langchain-openai==0.1.9
 langchain-anthropic==0.1.19
+langsmith==0.1.77
+openai==1.35.3
+anthropic==0.31.0
 
 # Testing
 pytest==8.2.2
