@@ -7,7 +7,7 @@ import uuid
 import logging
 
 from ..agents.orchestrator import OrchestratorGraph
-from ..core.agents.test_agents import EchoAgent, SequentialTestAgent
+from ..agents.test_agents import EchoAgent, SequentialTestAgent
 from ..core.state import DevMasterState, TaskType, ProjectStatus
 from ..core.websocket import manager
 from ..core.events import event_bus, Event, EventType

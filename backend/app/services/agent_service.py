@@ -12,8 +12,8 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents import DevMasterState, OrchestratorGraph
-from ..agents.workflows import create_workflow_for_task
-# from ..agents.specialists import IntentClassifierAgent  # TODO: Import in Week 3
+from ..agents.classifiers import IntentClassifier, CapabilityRouter
+from ..agents.specialists import ChatAgent
 from ..config import settings
 
 
@@ -86,23 +86,18 @@ class AgentService:
         }
         
         try:
-            # TODO: Week 3 - Run intent classification
-            # classifier = IntentClassifierAgent()
-            # result = await classifier.run(initial_state)
-            # initial_state.update(result)
+            # Create the orchestrator
+            orchestrator = OrchestratorGraph()
             
-            # For now, just use the task_type from initial state if set
-            # Otherwise default to CONVERSATIONAL_CHAT
-            # Get the appropriate workflow
-            task_type = initial_state.get("task_type", "CONVERSATIONAL_CHAT")
-            workflow = create_workflow_for_task(task_type)
+            # Register agents based on task
+            # For now, register all available agents
+            # TODO: In Week 5-8, add more specialist agents
+            orchestrator.register_agent(IntentClassifier())
+            orchestrator.register_agent(CapabilityRouter())
+            orchestrator.register_agent(ChatAgent())
             
-            if not workflow:
-                raise ValueError(f"No workflow available for task type: {task_type}")
-            
-            # Execute the workflow asynchronously
-            # In production, this would be queued to Celery
-            final_state = await workflow.execute(initial_state)
+            # Execute the workflow
+            final_state = await orchestrator.execute(initial_state)
             
             # Update stored state
             self.active_executions[execution_id]["state"] = final_state
@@ -111,7 +106,7 @@ class AgentService:
             return {
                 "execution_id": execution_id,
                 "status": final_state.get("status", "unknown"),
-                "task_type": task_type,
+                "task_type": final_state.get("task_type", "CONVERSATIONAL_CHAT"),
                 "messages": final_state.get("messages", []),
                 "artifacts": final_state.get("artifacts", {}),
                 "errors": final_state.get("errors", [])
