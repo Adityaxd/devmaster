@@ -22,3 +22,15 @@ langchain-anthropic==0.1.19
 pytest==8.2.2
 pytest-asyncio==0.23.7
 pytest-cov==5.0.0
+pytest-mock==3.14.0
+faker==25.8.0
+factory-boy==3.3.0
+
+# Code Quality
+black==24.4.2
+ruff==0.4.9
+mypy==1.10.0
+pre-commit==3.7.1
+
+# WebSocket Support
+websockets==12.0
