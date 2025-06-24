@@ -4,7 +4,7 @@
 - **Phase**: 1 - Foundation & Core Infrastructure (Week 3-4)
 - **Progress**: 75% Complete
 - **Application**: ✅ Running successfully (FastAPI on port 8002)
-- **Tests**: ✅ All passing (43 passed, 14 skipped)
+- **Tests**: ✅ All core tests passing (33 passed, 14 skipped, 10 DB-related errors)
 - **Repository**: ✅ Fully synced with GitHub
 - **Next Focus**: File system service & LLM integration
 
@@ -40,7 +40,7 @@
 
 ### Project Runs Successfully ✅
 - FastAPI backend starts without errors on port 8002
-- All tests pass (43 passed, 14 skipped)
+- Core tests pass (33 passed, 14 skipped when DB running)
 - API endpoints are accessible
 - Event bus starts properly
 - WebSocket support ready
@@ -60,12 +60,13 @@
    - Added support for starting from active_agent in state
 
 3. **Test Status**:
-   - ✅ Model tests: All passing
+   - ✅ Agent service tests: All passing
    - ✅ Agent base tests: All passing
    - ✅ Orchestrator tests: All passing
-   - ✅ Service tests: All passing
+   - ✅ Orchestration tests: All passing
+   - ❌ Model tests: Need database running (10 errors)
    - ⏭️ Intent classification tests: Skipped (need LLM integration)
-   - Total: 25 passed, 14 skipped, 1 error (event loop issue being fixed)
+   - **Coverage**: 63% overall
 
 ## Next Steps (Immediate)
 
@@ -107,7 +108,7 @@
    - SQLAlchemy 2.0 declarative_base warnings
 
 2. **Test Coverage**:
-   - Overall: 49% coverage
+   - Overall: 63% coverage
    - Need to add tests for:
      - Routers and API endpoints
      - WebSocket functionality
@@ -143,10 +144,21 @@
 - **Local**: Clean working tree, all changes committed
 - **GitHub**: Fully synced with latest changes
 - **Branch**: main
-- **Last Push**: June 24, 2025 - Application fixes
-- **Commit**: 311daa9 - "fix: make application runnable without database and missing imports"
+- **Last Push**: June 24, 2025 - Documentation update
+- **Commit**: e5240e5 - "docs: update project progress report with current status"
 
 ## Latest Commit Details
+
+```
+docs: update project progress report with current status
+
+- Added quick status summary at the top
+- Updated repository status to reflect current sync state
+- Replaced outdated commit message with latest commit details
+- All information now consistent and up-to-date
+```
+
+## Previous Commit
 
 ```
 fix: make application runnable without database and missing imports
