@@ -11,8 +11,8 @@ from ..core.agents.test_agents import EchoAgent, SequentialTestAgent
 from ..core.state import DevMasterState, TaskType, ProjectStatus
 from ..core.websocket import manager
 from ..core.events import event_bus, Event, EventType
-from ..agents.classifiers import IntentClassifier, CapabilityRouter
-from ..agents.specialists import ChatAgent
+# from ..agents.classifiers import IntentClassifier, CapabilityRouter
+# from ..agents.specialists import ChatAgent
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -35,9 +35,9 @@ orchestrator.register_agent(agent2)
 orchestrator.register_agent(agent3)
 
 # Register classification agents
-orchestrator.register_agent(IntentClassifier())
-orchestrator.register_agent(CapabilityRouter())
-orchestrator.register_agent(ChatAgent())
+# orchestrator.register_agent(IntentClassifier())
+# orchestrator.register_agent(CapabilityRouter())
+# orchestrator.register_agent(ChatAgent())
 
 @router.post("/test/echo")
 async def test_echo_orchestration(request: Dict[str, Any]):
@@ -233,14 +233,14 @@ async def list_workflows():
     """
     List all available workflow templates.
     """
-    from ..agents.classifiers.capability_router import CapabilityRouter
+    # from ..agents.classifiers.capability_router import CapabilityRouter
     
     workflows = []
-    for name, template in CapabilityRouter.WORKFLOW_TEMPLATES.items():
-        workflows.append({
-            "name": name,
-            "template": template.model_dump()
-        })
+    # for name, template in CapabilityRouter.WORKFLOW_TEMPLATES.items():
+    #     workflows.append({
+    #         "name": name,
+    #         "template": template.model_dump()
+    #     })
     
     return {
         "workflows": workflows,

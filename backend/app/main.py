@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from .config import settings
-from .database import engine, Base
+from .database import sync_engine, Base, init_db
 from .routers import orchestration
 from .core.events import event_bus
 
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
 # Create all tables (for development only)
 # In production, use Alembic migrations
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=sync_engine)  # Commented out - database not running
 
 # Create FastAPI app
 app = FastAPI(
