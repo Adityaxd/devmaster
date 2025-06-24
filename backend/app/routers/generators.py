@@ -5,7 +5,7 @@ Exposes the Platform Primitives via REST API
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from app.generators import PythonToSQLGenerator
 from app.models.user import User
@@ -30,7 +30,7 @@ class PythonToSQLResponse(BaseModel):
     """Response model for Python-to-SQL generation."""
     model_name: str
     sql: str
-    metadata: Dict[str, any]
+    metadata: Dict[str, Any]
 
 
 class GenerateAllSQLResponse(BaseModel):
